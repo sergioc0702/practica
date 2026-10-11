@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Valorant | Agentes, mapas y armas</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">V</div>
+        <span>Valorant</span>
+      </div>
+      <div class="status-pill">Roster activo</div>
+    </header>
+
+    <section class="hero">
+      <div>
+        <h1>Agentes de Valorant</h1>
+        <p>Explora los agentes, mapas y armas del Protocolo Valorant. Selecciona una categoría para consultar sus detalles.</p>
+      </div>
+    </section>
+
+    <nav class="content-tabs" role="tablist" aria-label="Seleccionar contenido">
+      <button class="content-tab is-active" id="agents-tab" type="button" role="tab"
+        aria-selected="true" aria-controls="agents-panel" data-content="agents">Agentes</button>
+      <button class="content-tab" id="maps-tab" type="button" role="tab"
+        aria-selected="false" aria-controls="maps-panel" data-content="maps">Mapas</button>
+      <button class="content-tab" id="weapons-tab" type="button" role="tab"
+        aria-selected="false" aria-controls="weapons-panel" data-content="weapons">Armas</button>
+    </nav>
+
+    <section class="metrics" aria-label="Resumen de agentes">
+      <div class="metric">
+        <span>Agentes</span>
+        <strong id="metric-total">--</strong>
+      </div>
+      <div class="metric">
+        <span>Roles</span>
+        <strong id="metric-roles">--</strong>
+      </div>
+      <div class="metric">
+        <span>Disponibles</span>
+        <strong>24/7</strong>
+      </div>
+    </section>
+
+    <main>
+      <section id="agents-panel" class="content-panel" role="tabpanel" aria-labelledby="agents-tab">
+        <div id="agents" class="agents-grid" aria-live="polite"></div>
+      </section>
+      <section id="maps-panel" class="content-panel" role="tabpanel" aria-labelledby="maps-tab" hidden>
+        <div id="maps" class="agents-grid" aria-live="polite"></div>
+      </section>
+      <section id="weapons-panel" class="content-panel" role="tabpanel" aria-labelledby="weapons-tab" hidden>
+        <div id="weapons" class="agents-grid weapons-grid" aria-live="polite"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
