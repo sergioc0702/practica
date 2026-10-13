@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f6fa">
+    <title>Inspira — Generador de frases</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="topbar">
+        <a class="brand" href="main.html" aria-label="Inspira, inicio">
+            <span class="brand-mark" aria-hidden="true">
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 3.5v2m0 13v2m8.5-8.5h-2m-13 0h-2m13.51-6.01-1.42 1.42M8.41 15.59l-1.42 1.42m10.02 0-1.42-1.42M8.41 8.41 6.99 6.99" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8"/>
+                </svg>
+            </span>
+            Inspira
+        </a>
+        <span class="top-note">Una pausa para encontrar inspiración</span>
+    </header>
+
+    <main>
+        <section class="generator" aria-labelledby="page-title">
+            <p class="eyebrow">Tu dosis de inspiración</p>
+            <h1 id="page-title">Una frase. Una nueva perspectiva.</h1>
+            <p class="intro">A veces, las palabras adecuadas son todo lo que necesitamos para seguir adelante.</p>
+
+            <div class="quote-card" aria-live="polite" aria-busy="true">
+                <span class="quote-mark" aria-hidden="true">“</span>
+                <p id="quote">Buscando una frase para ti…</p>
+                <span class="quote-caption">Una idea para llevar contigo</span>
+            </div>
+
+            <div class="actions">
+                <button class="primary" id="new-quote" type="button">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M20 7v5h-5M4.93 9A8 8 0 0 1 18.2 5.8L20 7M4 17v-5h5m10.07 3A8 8 0 0 1 5.8 18.2L4 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Generar otra frase
+                </button>
+                <button class="secondary" id="copy-quote" type="button" disabled>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/>
+                        <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.8"/>
+                    </svg>
+                    Copiar frase
+                </button>
+            </div>
+            <p id="status" role="status"></p>
+        </section>
+    </main>
+
+    <footer>Hecho para inspirar tus próximos pasos.</footer>
+
+    <script>
+        const quoteElement = document.querySelector("#quote");
+        const quoteCard = document.querySelector(".quote-card");
+        const statusElement = document.querySelector("#status");
+        const newQuoteButton = document.querySelector("#new-quote");
+        const copyQuoteButton = document.querySelector("#copy-quote");
+
+        async function loadQuote() {
+            newQuoteButton.disabled = true;
+            copyQuoteButton.disabled = true;
+            quoteCard.setAttribute("aria-busy", "true");
+            statusElement.textContent = "";
+            statusElement.removeAttribute("data-error");
+            quoteElement.textContent = "Buscando una frase para ti…";
+
+            try {
+                const response = await fetch("index.php", {
+                    headers: { "Accept": "application/json" },
+                    cache: "no-store"
+                });
+
+                if (!response.ok) {
+                    throw new Error(`El servidor respondió con el estado ${response.status}.`);
+                }
+
+                const data = await response.json();
+                if (typeof data.frase !== "string" || data.frase.trim() === "") {
+                    throw new Error("La respuesta del servidor no contiene una frase válida.");
+                }
+
+                quoteElement.textContent = data.frase;
+                copyQuoteButton.disabled = false;
+            } catch (error) {
+                quoteElement.textContent = "No pudimos cargar una frase.";
+                statusElement.textContent = "Comprueba que abriste esta página desde un servidor con PHP e inténtalo de nuevo.";
+                statusElement.dataset.error = "true";
+                console.error("No se pudo obtener una frase:", error);
+            } finally {
+                newQuoteButton.disabled = false;
+                quoteCard.setAttribute("aria-busy", "false");
+            }
+        }
+
+        newQuoteButton.addEventListener("click", loadQuote);
+        copyQuoteButton.addEventListener("click", async () => {
+            try {
+                await navigator.clipboard.writeText(quoteElement.textContent);
+                statusElement.removeAttribute("data-error");
+                statusElement.textContent = "Frase copiada al portapapeles.";
+            } catch (error) {
+                statusElement.dataset.error = "true";
+                statusElement.textContent = "No se pudo copiar la frase. Inténtalo de nuevo.";
+                console.error("No se pudo copiar la frase:", error);
+            }
+        });
+
+        loadQuote();
+    </script>
+</body>
+</html>

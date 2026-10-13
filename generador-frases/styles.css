@@ -1,0 +1,211 @@
+:root {
+    color-scheme: light;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #20243a;
+    background: #f5f6fa;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.topbar {
+    width: min(1120px, calc(100% - 48px));
+    margin: 0 auto;
+    padding: 27px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 11px;
+    color: inherit;
+    text-decoration: none;
+    font-size: 17px;
+    font-weight: 750;
+    letter-spacing: -0.04em;
+}
+
+.brand-mark {
+    width: 35px;
+    height: 35px;
+    display: grid;
+    place-items: center;
+    border-radius: 11px;
+    color: #fff;
+    background: #6558d3;
+    box-shadow: 0 5px 12px #6558d333;
+}
+
+.top-note {
+    color: #777b8e;
+    font-size: 13px;
+    font-weight: 550;
+}
+
+main {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    padding: 48px 24px 80px;
+    background:
+        radial-gradient(ellipse at 50% 35%, #e8e5ff 0, #f5f6fa 51%, transparent 74%);
+}
+
+.generator {
+    width: min(100%, 680px);
+    text-align: center;
+}
+
+.eyebrow {
+    margin: 0 0 15px;
+    color: #6558d3;
+    font-size: 12px;
+    font-weight: 750;
+    letter-spacing: .17em;
+    text-transform: uppercase;
+}
+
+h1 {
+    margin: 0;
+    font-size: clamp(36px, 7vw, 56px);
+    line-height: 1.08;
+    letter-spacing: -.055em;
+}
+
+.intro {
+    max-width: 430px;
+    margin: 18px auto 34px;
+    color: #777b8e;
+    font-size: 16px;
+    line-height: 1.65;
+}
+
+.quote-card {
+    position: relative;
+    padding: 46px 54px 38px;
+    overflow: hidden;
+    border: 1px solid #e9e9f1;
+    border-radius: 24px;
+    background: #fff;
+    box-shadow: 0 22px 65px #29265012, 0 3px 10px #29265008;
+}
+
+.quote-mark {
+    display: block;
+    height: 43px;
+    color: #e2defd;
+    font-family: Georgia, serif;
+    font-size: 76px;
+    line-height: .9;
+}
+
+#quote {
+    min-height: 96px;
+    margin: 20px 0 19px;
+    display: grid;
+    place-items: center;
+    color: #282b40;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(23px, 4vw, 31px);
+    line-height: 1.45;
+    letter-spacing: -.025em;
+}
+
+.quote-caption {
+    color: #9699a8;
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+
+.actions {
+    margin-top: 27px;
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+}
+
+button {
+    min-height: 48px;
+    padding: 0 19px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+button:hover:not(:disabled) { transform: translateY(-2px); }
+button:focus-visible { outline: 3px solid #9d94f6; outline-offset: 3px; }
+
+.primary {
+    color: #fff;
+    background: #6558d3;
+    box-shadow: 0 7px 15px #6558d333;
+}
+
+.primary:hover:not(:disabled) {
+    background: #574ac5;
+    box-shadow: 0 10px 20px #6558d344;
+}
+
+.secondary {
+    color: #55596d;
+    border-color: #e6e7ee;
+    background: #fff;
+}
+
+.secondary:hover:not(:disabled) { background: #f8f8fc; }
+button:disabled { cursor: wait; opacity: .7; }
+
+#status {
+    min-height: 20px;
+    margin: 15px 0 0;
+    color: #777b8e;
+    font-size: 13px;
+}
+
+#status[data-error="true"] { color: #b42336; }
+
+footer {
+    padding: 20px 24px 25px;
+    color: #a0a2af;
+    text-align: center;
+    font-size: 12px;
+}
+
+@media (max-width: 540px) {
+    .topbar { width: calc(100% - 36px); padding: 19px 0; }
+    .top-note { font-size: 11px; }
+    main { padding: 45px 18px 60px; }
+    .intro { margin-bottom: 27px; font-size: 15px; }
+    .quote-card { padding: 34px 22px 29px; border-radius: 19px; }
+    #quote { min-height: 125px; }
+    .actions { flex-direction: column; }
+    button { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
