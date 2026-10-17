@@ -1,0 +1,224 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(ellipse at 15% 5%, rgb(168 224 99 / 12%), transparent 35%),
+    linear-gradient(145deg, #11151b, #1b2229 55%, #11151b);
+  color: #f5f5f5;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.page {
+  width: min(1100px, calc(100% - 2rem));
+  margin: 2rem auto;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 14px;
+  background: rgb(32 35 41 / 85%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  font-size: clamp(1.25rem, 3vw, 1.8rem);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.brand-mark {
+  display: grid;
+  width: 2.6rem;
+  height: 2.6rem;
+  place-items: center;
+  border-radius: 10px;
+  background: #a8e063;
+  color: #172015;
+  font-size: 0.95rem;
+  font-weight: 900;
+}
+
+.status-pill {
+  padding: 0.45rem 0.8rem;
+  border: 1px solid rgb(168 224 99 / 35%);
+  border-radius: 999px;
+  background: rgb(168 224 99 / 10%);
+  color: #c8f58e;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+#personajes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+
+.container-personaje {
+  overflow: hidden;
+  border: 1px solid #3c3c3c;
+  border-radius: 12px;
+  background: #202329;
+  color: #f5f5f5;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 20%);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.container-personaje:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 24px rgb(0 0 0 / 35%);
+}
+
+.container-personaje > div:first-child {
+  height: 220px;
+  background: #343a40;
+}
+
+.container-personaje > div:first-child img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.container-info-personaje {
+  padding: 1rem;
+}
+
+.container-info-personaje-name h2 {
+  margin: 0 0 0.4rem;
+}
+
+.container-info-personaje-name p {
+  margin: 0;
+  color: #b8c0cc;
+}
+
+.container-info-personaje-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.container-info-personaje-stats > div {
+  padding: 0.65rem;
+  border-radius: 8px;
+  background: #2b3038;
+}
+
+.container-info-personaje-stats h2 {
+  margin: 0 0 0.25rem;
+  color: #a8e063;
+  font-size: 0.8rem;
+}
+
+.container-info-personaje-stats p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.paginacion {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.paginacion button {
+  padding: 0.65rem 1.1rem;
+  border: 1px solid #a8e063;
+  border-radius: 8px;
+  background: #a8e063;
+  color: #172015;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.paginacion button:not(:disabled):hover {
+  transform: translateY(-2px);
+  background: #c0f27a;
+  box-shadow: 0 5px 14px rgb(168 224 99 / 25%);
+}
+
+.paginacion button:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+
+.paginacion button:focus-visible {
+  outline: 3px solid #f5f5f5;
+  outline-offset: 3px;
+}
+
+.paginacion span {
+  min-width: 8rem;
+  color: #d5dbe3;
+  font-weight: 700;
+  text-align: center;
+}
+
+.paginacion button:disabled {
+  border-color: #555d66;
+  background: #343a40;
+  color: #9ba3ad;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 800px) {
+  #personajes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 540px) {
+  .page {
+    width: min(100% - 1.25rem, 420px);
+    margin: 1rem auto;
+  }
+
+  .topbar {
+    padding: 0.8rem;
+  }
+
+  .brand {
+    gap: 0.55rem;
+  }
+
+  .brand-mark {
+    width: 2.2rem;
+    height: 2.2rem;
+  }
+
+  .status-pill {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.75rem;
+  }
+
+  #personajes {
+    grid-template-columns: 1fr;
+  }
+}
