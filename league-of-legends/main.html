@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#080d16" id="meta-theme-color">
+    <meta name="description" content="Explora los campeones de League of Legends y descubre sus regiones.">
+    <meta name="color-scheme" content="dark light">
+    <title>Campeones — League of Legends</title>
+    <link rel="preconnect" href="https://ddragon.leagueoflegends.com">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="main.css">
+    <script>
+        (function () {
+            var stored = null;
+            try {
+                stored = localStorage.getItem("runeterra-theme");
+            } catch (error) {
+                console.error("No se pudo leer la preferencia de tema:", error);
+            }
+            var theme = stored === "light" || stored === "dark"
+                ? stored
+                : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+            document.documentElement.setAttribute("data-theme", theme);
+            var meta = document.getElementById("meta-theme-color");
+            if (meta) meta.setAttribute("content", theme === "light" ? "#e8ecf1" : "#080d16");
+        })();
+    </script>
+    <script src="app.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#catalog-main">Saltar al catálogo</a>
+
+    <div class="top-bar">
+        <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Cambiar entre tema claro y oscuro" aria-pressed="false">
+            <svg class="theme-toggle-icon theme-icon-dark" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+                <path fill="currentColor" d="M12 3a1 1 0 0 1 1 1v1.06a7.94 7.94 0 0 1 5.94 5.94H20a1 1 0 1 1 0 2h-1.06A7.94 7.94 0 0 1 13 19.94V21a1 1 0 1 1-2 0v-1.06A7.94 7.94 0 0 1 5.06 13H4a1 1 0 1 1 0-2h1.06A7.94 7.94 0 0 1 11 5.06V4a1 1 0 0 1 1-1Zm0 4a5 5 0 1 0 0 10 5 5 0 0 0 0-10Z"/>
+            </svg>
+            <svg class="theme-toggle-icon theme-icon-light" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20">
+                <path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.463.402.807a6.5 6.5 0 0 0 8.268 8.268c.344-.215.829-.003.803.397Z" fill="currentColor"/>
+            </svg>
+            <span class="theme-toggle-label">Tema</span>
+        </button>
+    </div>
+
+    <main class="page-shell">
+        <header class="hero">
+            <p class="eyebrow">UNIVERSO LEAGUE OF LEGENDS</p>
+            <h1>Elige tu <span>campeón</span></h1>
+            <p class="hero-copy">Explora a los héroes y leyendas que dan vida a Runaterra.</p>
+        </header>
+
+        <section id="catalog-main" class="catalog" aria-labelledby="catalog-title">
+            <div class="catalog-heading">
+                <div>
+                    <p class="eyebrow">EL ARCHIVO DE RUNATERRA</p>
+                    <h2 id="catalog-title">Todos los campeones</h2>
+                </div>
+                <p id="status" class="status" role="status" aria-live="polite">Cargando campeones...</p>
+            </div>
+
+            <div class="filters" role="search" aria-label="Filtros del catálogo">
+                <label class="search-field">
+                    <span class="visually-hidden">Buscar campeón</span>
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19">
+                        <circle cx="10.8" cy="10.8" r="6.8" fill="none" stroke="currentColor" stroke-width="1.7"></circle>
+                        <path d="m16 16 4.2 4.2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"></path>
+                    </svg>
+                    <input id="search" type="search" name="q" placeholder="Buscar campeón..." autocomplete="off" enterkeyhint="search">
+                </label>
+
+                <label class="region-field">
+                    <span id="region-label">Región</span>
+                    <select id="region-filter" aria-labelledby="region-label">
+                        <option value="">Todas las regiones</option>
+                    </select>
+                </label>
+
+                <fieldset id="position-filter" class="position-filter">
+                    <legend>Posición en la Grieta</legend>
+                    <div class="position-filter-options">
+                        <label class="position-option">
+                            <input type="checkbox" name="position" value="TOP">
+                            <span>Superior</span>
+                        </label>
+                        <label class="position-option">
+                            <input type="checkbox" name="position" value="JUNGLE">
+                            <span>Jungla</span>
+                        </label>
+                        <label class="position-option">
+                            <input type="checkbox" name="position" value="MIDDLE">
+                            <span>Central</span>
+                        </label>
+                        <label class="position-option">
+                            <input type="checkbox" name="position" value="BOTTOM">
+                            <span>Inferior</span>
+                        </label>
+                        <label class="position-option">
+                            <input type="checkbox" name="position" value="SUPPORT">
+                            <span>Soporte</span>
+                        </label>
+                    </div>
+                    <button id="clear-positions" class="clear-positions" type="button">Limpiar líneas</button>
+                </fieldset>
+
+                <button type="button" id="reset-filters" class="reset-filters">Restablecer filtros</button>
+            </div>
+
+            <div id="active-filters" class="active-filters" hidden aria-label="Filtros activos"></div>
+
+            <ul id="champions" class="champion-grid" aria-label="Campeones"></ul>
+            <p id="empty-state" class="empty-state" hidden role="status">No encontramos campeones con esos filtros.</p>
+        </section>
+
+        <footer class="footer">
+            <p>ESTO ES UNA PRUEBA DE PROYECTOS.</p>
+        </footer>
+    </main>
+
+    <dialog id="champion-lore-dialog" class="lore-dialog" aria-labelledby="lore-title">
+        <div class="lore-dialog-content">
+            <button type="button" id="lore-close" class="lore-close" aria-label="Cerrar historia" autofocus>×</button>
+            <p id="lore-region" class="eyebrow lore-region"></p>
+            <h2 id="lore-title"></h2>
+            <p id="lore-status" class="lore-status" role="status" aria-live="polite"></p>
+            <p id="lore-text" class="lore-text" hidden></p>
+            <button type="button" id="lore-retry" class="reset-filters lore-retry" hidden>Intentar de nuevo</button>
+        </div>
+    </dialog>
+</body>
+</html>

@@ -1,0 +1,587 @@
+{
+    "source":  "https://cdn.merakianalytics.com/riot/lol/resources/latest/en-US/champions.json",
+    "champions":  {
+                      "aatrox":  [
+                                     "TOP"
+                                 ],
+                      "ahri":  [
+                                   "MIDDLE"
+                               ],
+                      "akali":  [
+                                    "MIDDLE",
+                                    "TOP"
+                                ],
+                      "akshan":  [
+                                     "MIDDLE"
+                                 ],
+                      "alistar":  [
+                                      "SUPPORT"
+                                  ],
+                      "ambessa":  [
+                                      "TOP"
+                                  ],
+                      "amumu":  [
+                                    "JUNGLE",
+                                    "SUPPORT"
+                                ],
+                      "anivia":  [
+                                     "MIDDLE"
+                                 ],
+                      "annie":  [
+                                    "MIDDLE"
+                                ],
+                      "aphelios":  [
+                                       "BOTTOM"
+                                   ],
+                      "ashe":  [
+                                   "BOTTOM",
+                                   "SUPPORT"
+                               ],
+                      "aurelionsol":  [
+                                          "MIDDLE"
+                                      ],
+                      "aurora":  [
+                                     "MIDDLE",
+                                     "TOP"
+                                 ],
+                      "azir":  [
+                                   "MIDDLE"
+                               ],
+                      "bard":  [
+                                   "SUPPORT"
+                               ],
+                      "belveth":  [
+                                      "JUNGLE"
+                                  ],
+                      "blitzcrank":  [
+                                         "SUPPORT"
+                                     ],
+                      "brand":  [
+                                    "JUNGLE",
+                                    "MIDDLE",
+                                    "SUPPORT"
+                                ],
+                      "braum":  [
+                                    "SUPPORT"
+                                ],
+                      "briar":  [
+                                    "JUNGLE"
+                                ],
+                      "caitlyn":  [
+                                      "BOTTOM"
+                                  ],
+                      "camille":  [
+                                      "SUPPORT",
+                                      "TOP"
+                                  ],
+                      "cassiopeia":  [
+                                         "MIDDLE"
+                                     ],
+                      "chogath":  [
+                                      "TOP"
+                                  ],
+                      "corki":  [
+                                    "MIDDLE"
+                                ],
+                      "darius":  [
+                                     "TOP"
+                                 ],
+                      "diana":  [
+                                    "JUNGLE",
+                                    "MIDDLE"
+                                ],
+                      "drmundo":  [
+                                      "TOP"
+                                  ],
+                      "draven":  [
+                                     "BOTTOM"
+                                 ],
+                      "ekko":  [
+                                   "JUNGLE",
+                                   "MIDDLE"
+                               ],
+                      "elise":  [
+                                    "JUNGLE"
+                                ],
+                      "evelynn":  [
+                                      "JUNGLE"
+                                  ],
+                      "ezreal":  [
+                                     "BOTTOM"
+                                 ],
+                      "fiddlesticks":  [
+                                           "JUNGLE"
+                                       ],
+                      "fiora":  [
+                                    "TOP"
+                                ],
+                      "fizz":  [
+                                   "MIDDLE"
+                               ],
+                      "galio":  [
+                                    "MIDDLE",
+                                    "SUPPORT"
+                                ],
+                      "gangplank":  [
+                                        "TOP"
+                                    ],
+                      "garen":  [
+                                    "TOP"
+                                ],
+                      "gnar":  [
+                                   "TOP"
+                               ],
+                      "gragas":  [
+                                     "JUNGLE",
+                                     "MIDDLE",
+                                     "TOP"
+                                 ],
+                      "graves":  [
+                                     "JUNGLE"
+                                 ],
+                      "gwen":  [
+                                   "JUNGLE",
+                                   "TOP"
+                               ],
+                      "hecarim":  [
+                                      "JUNGLE"
+                                  ],
+                      "heimerdinger":  [
+                                           "MIDDLE",
+                                           "SUPPORT",
+                                           "TOP"
+                                       ],
+                      "hwei":  [
+                                   "MIDDLE",
+                                   "SUPPORT"
+                               ],
+                      "illaoi":  [
+                                     "TOP"
+                                 ],
+                      "irelia":  [
+                                     "MIDDLE",
+                                     "TOP"
+                                 ],
+                      "ivern":  [
+                                    "JUNGLE"
+                                ],
+                      "janna":  [
+                                    "SUPPORT"
+                                ],
+                      "jarvaniv":  [
+                                       "JUNGLE"
+                                   ],
+                      "jax":  [
+                                  "JUNGLE",
+                                  "TOP"
+                              ],
+                      "jayce":  [
+                                    "MIDDLE",
+                                    "TOP"
+                                ],
+                      "jhin":  [
+                                   "BOTTOM"
+                               ],
+                      "jinx":  [
+                                   "BOTTOM"
+                               ],
+                      "ksante":  [
+                                     "TOP"
+                                 ],
+                      "kaisa":  [
+                                    "BOTTOM"
+                                ],
+                      "kalista":  [
+                                      "BOTTOM"
+                                  ],
+                      "karma":  [
+                                    "MIDDLE",
+                                    "SUPPORT",
+                                    "TOP"
+                                ],
+                      "karthus":  [
+                                      "JUNGLE"
+                                  ],
+                      "kassadin":  [
+                                       "MIDDLE"
+                                   ],
+                      "katarina":  [
+                                       "MIDDLE"
+                                   ],
+                      "kayle":  [
+                                    "TOP"
+                                ],
+                      "kayn":  [
+                                   "JUNGLE"
+                               ],
+                      "kennen":  [
+                                     "TOP"
+                                 ],
+                      "khazix":  [
+                                     "JUNGLE"
+                                 ],
+                      "kindred":  [
+                                      "JUNGLE"
+                                  ],
+                      "kled":  [
+                                   "TOP"
+                               ],
+                      "kogmaw":  [
+                                     "BOTTOM"
+                                 ],
+                      "leblanc":  [
+                                      "MIDDLE"
+                                  ],
+                      "leesin":  [
+                                     "JUNGLE"
+                                 ],
+                      "leona":  [
+                                    "SUPPORT"
+                                ],
+                      "lillia":  [
+                                     "JUNGLE"
+                                 ],
+                      "lissandra":  [
+                                        "MIDDLE"
+                                    ],
+                      "lucian":  [
+                                     "BOTTOM"
+                                 ],
+                      "lulu":  [
+                                   "SUPPORT"
+                               ],
+                      "lux":  [
+                                  "MIDDLE",
+                                  "SUPPORT"
+                              ],
+                      "malphite":  [
+                                       "MIDDLE",
+                                       "SUPPORT",
+                                       "TOP"
+                                   ],
+                      "malzahar":  [
+                                       "MIDDLE"
+                                   ],
+                      "maokai":  [
+                                     "JUNGLE",
+                                     "SUPPORT"
+                                 ],
+                      "masteryi":  [
+                                       "JUNGLE"
+                                   ],
+                      "mel":  [
+                                  "MIDDLE",
+                                  "SUPPORT"
+                              ],
+                      "milio":  [
+                                    "SUPPORT"
+                                ],
+                      "missfortune":  [
+                                          "BOTTOM"
+                                      ],
+                      "mordekaiser":  [
+                                          "TOP"
+                                      ],
+                      "morgana":  [
+                                      "SUPPORT"
+                                  ],
+                      "naafiri":  [
+                                      "MIDDLE"
+                                  ],
+                      "nami":  [
+                                   "SUPPORT"
+                               ],
+                      "nasus":  [
+                                    "TOP"
+                                ],
+                      "nautilus":  [
+                                       "SUPPORT"
+                                   ],
+                      "neeko":  [
+                                    "MIDDLE",
+                                    "SUPPORT"
+                                ],
+                      "nidalee":  [
+                                      "JUNGLE"
+                                  ],
+                      "nilah":  [
+                                    "BOTTOM"
+                                ],
+                      "nocturne":  [
+                                       "JUNGLE"
+                                   ],
+                      "nunu":  [
+                                   "JUNGLE"
+                               ],
+                      "olaf":  [
+                                   "TOP"
+                               ],
+                      "orianna":  [
+                                      "MIDDLE"
+                                  ],
+                      "ornn":  [
+                                   "TOP"
+                               ],
+                      "pantheon":  [
+                                       "JUNGLE",
+                                       "MIDDLE",
+                                       "SUPPORT",
+                                       "TOP"
+                                   ],
+                      "poppy":  [
+                                    "JUNGLE",
+                                    "TOP"
+                                ],
+                      "pyke":  [
+                                   "SUPPORT"
+                               ],
+                      "qiyana":  [
+                                     "MIDDLE"
+                                 ],
+                      "quinn":  [
+                                    "TOP"
+                                ],
+                      "rakan":  [
+                                    "SUPPORT"
+                                ],
+                      "rammus":  [
+                                     "JUNGLE"
+                                 ],
+                      "reksai":  [
+                                     "JUNGLE"
+                                 ],
+                      "rell":  [
+                                   "SUPPORT"
+                               ],
+                      "renata":  [
+                                     "SUPPORT"
+                                 ],
+                      "renekton":  [
+                                       "TOP"
+                                   ],
+                      "rengar":  [
+                                     "JUNGLE",
+                                     "TOP"
+                                 ],
+                      "riven":  [
+                                    "TOP"
+                                ],
+                      "rumble":  [
+                                     "MIDDLE",
+                                     "TOP"
+                                 ],
+                      "ryze":  [
+                                   "MIDDLE"
+                               ],
+                      "samira":  [
+                                     "BOTTOM"
+                                 ],
+                      "sejuani":  [
+                                      "JUNGLE"
+                                  ],
+                      "senna":  [
+                                    "BOTTOM",
+                                    "SUPPORT"
+                                ],
+                      "seraphine":  [
+                                        "BOTTOM",
+                                        "SUPPORT"
+                                    ],
+                      "sett":  [
+                                   "TOP"
+                               ],
+                      "shaco":  [
+                                    "JUNGLE",
+                                    "SUPPORT"
+                                ],
+                      "shen":  [
+                                   "SUPPORT",
+                                   "TOP"
+                               ],
+                      "shyvana":  [
+                                      "JUNGLE"
+                                  ],
+                      "singed":  [
+                                     "TOP"
+                                 ],
+                      "sion":  [
+                                   "TOP"
+                               ],
+                      "sivir":  [
+                                    "BOTTOM"
+                                ],
+                      "skarner":  [
+                                      "JUNGLE",
+                                      "TOP"
+                                  ],
+                      "smolder":  [
+                                      "BOTTOM",
+                                      "MIDDLE",
+                                      "TOP"
+                                  ],
+                      "sona":  [
+                                   "SUPPORT"
+                               ],
+                      "soraka":  [
+                                     "SUPPORT"
+                                 ],
+                      "swain":  [
+                                    "BOTTOM",
+                                    "MIDDLE",
+                                    "SUPPORT"
+                                ],
+                      "sylas":  [
+                                    "MIDDLE",
+                                    "TOP"
+                                ],
+                      "syndra":  [
+                                     "MIDDLE"
+                                 ],
+                      "tahmkench":  [
+                                        "SUPPORT",
+                                        "TOP"
+                                    ],
+                      "taliyah":  [
+                                      "JUNGLE",
+                                      "MIDDLE"
+                                  ],
+                      "talon":  [
+                                    "JUNGLE"
+                                ],
+                      "taric":  [
+                                    "MIDDLE",
+                                    "SUPPORT"
+                                ],
+                      "teemo":  [
+                                    "JUNGLE",
+                                    "SUPPORT",
+                                    "TOP"
+                                ],
+                      "thresh":  [
+                                     "SUPPORT"
+                                 ],
+                      "tristana":  [
+                                       "BOTTOM",
+                                       "MIDDLE"
+                                   ],
+                      "trundle":  [
+                                      "JUNGLE",
+                                      "TOP"
+                                  ],
+                      "tryndamere":  [
+                                         "TOP"
+                                     ],
+                      "twistedfate":  [
+                                          "BOTTOM",
+                                          "MIDDLE",
+                                          "TOP"
+                                      ],
+                      "twitch":  [
+                                     "BOTTOM",
+                                     "SUPPORT"
+                                 ],
+                      "udyr":  [
+                                   "JUNGLE",
+                                   "TOP"
+                               ],
+                      "urgot":  [
+                                    "TOP"
+                                ],
+                      "varus":  [
+                                    "BOTTOM"
+                                ],
+                      "vayne":  [
+                                    "BOTTOM",
+                                    "TOP"
+                                ],
+                      "veigar":  [
+                                     "MIDDLE",
+                                     "SUPPORT"
+                                 ],
+                      "velkoz":  [
+                                     "MIDDLE",
+                                     "SUPPORT"
+                                 ],
+                      "vex":  [
+                                  "MIDDLE"
+                              ],
+                      "vi":  [
+                                 "JUNGLE"
+                             ],
+                      "viego":  [
+                                    "JUNGLE"
+                                ],
+                      "viktor":  [
+                                     "MIDDLE"
+                                 ],
+                      "vladimir":  [
+                                       "MIDDLE",
+                                       "TOP"
+                                   ],
+                      "volibear":  [
+                                       "JUNGLE",
+                                       "TOP"
+                                   ],
+                      "warwick":  [
+                                      "JUNGLE",
+                                      "TOP"
+                                  ],
+                      "monkeyking":  [
+                                         "JUNGLE",
+                                         "TOP"
+                                     ],
+                      "xayah":  [
+                                    "BOTTOM"
+                                ],
+                      "xerath":  [
+                                     "MIDDLE",
+                                     "SUPPORT"
+                                 ],
+                      "xinzhao":  [
+                                      "JUNGLE"
+                                  ],
+                      "yasuo":  [
+                                    "BOTTOM",
+                                    "MIDDLE",
+                                    "TOP"
+                                ],
+                      "yone":  [
+                                   "MIDDLE",
+                                   "TOP"
+                               ],
+                      "yorick":  [
+                                     "TOP"
+                                 ],
+                      "yunara":  [
+                                     "BOTTOM"
+                                 ],
+                      "yuumi":  [
+                                    "SUPPORT"
+                                ],
+                      "zac":  [
+                                  "JUNGLE",
+                                  "SUPPORT",
+                                  "TOP"
+                              ],
+                      "zed":  [
+                                  "JUNGLE",
+                                  "MIDDLE"
+                              ],
+                      "zeri":  [
+                                   "BOTTOM"
+                               ],
+                      "ziggs":  [
+                                    "BOTTOM",
+                                    "MIDDLE"
+                                ],
+                      "zilean":  [
+                                     "SUPPORT"
+                                 ],
+                      "zoe":  [
+                                  "MIDDLE"
+                              ],
+                      "zyra":  [
+                                   "SUPPORT"
+                               ]
+                  }
+}
