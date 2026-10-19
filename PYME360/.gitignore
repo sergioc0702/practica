@@ -1,0 +1,12 @@
+# Archivos de trabajo y artefactos generados, fuera de la demostración web.
+outputs/
+
+# Dependencias o datos locales que no deben versionarse.
+node_modules/
+.env
+.env.*
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*

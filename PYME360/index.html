@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#f5f7f3">
+    <meta name="theme-color" content="#edf1ec">
     <meta name="description" content="Pyme360: gestión sencilla para tu negocio.">
     <title>Pyme360 · Gestión sencilla</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -14,18 +14,21 @@
   <body>
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
-        <a class="brand" href="#" aria-label="Pyme360 inicio" data-page="overview">
-          <span class="brand-mark"><span></span><span></span><span></span><span></span></span>
-          <span class="brand-word">pyme<span>360</span></span>
-        </a>
+        <div class="sidebar-header">
+          <a class="brand" href="#" aria-label="Pyme360 inicio" title="Pyme360 · Inicio" data-page="overview">
+            <span class="brand-mark"><span></span><span></span><span></span><span></span></span>
+            <span class="brand-word">pyme<span>360</span></span>
+          </a>
+          <button class="sidebar-toggle" type="button" data-action="sidebar-toggle" aria-controls="sidebar" aria-expanded="true" aria-label="Contraer menú" title="Contraer menú">‹</button>
+        </div>
         <button class="company-switcher" data-action="setup" aria-label="Configurar empresa">
           <span class="company-avatar">A</span>
           <span class="company-meta"><strong>Configura tu empresa</strong><span>Espacio de trabajo</span></span>
           <span class="chevron">⌄</span>
         </button>
         <div class="nav-label">TU NEGOCIO</div>
-        <nav class="main-nav" aria-label="Navegación principal">
-          <button class="nav-item active" data-page="overview"><span class="nav-icon">⌂</span><span>Inicio</span></button>
+        <nav class="main-nav" aria-label="Navegación principal" id="primary-navigation">
+          <button class="nav-item active" data-page="overview" aria-current="page"><span class="nav-icon">⌂</span><span>Inicio</span></button>
           <button class="nav-item" data-page="sales"><span class="nav-icon">↗</span><span>Ventas</span><span class="nav-count" id="sales-nav-count">3</span></button>
           <button class="nav-item" data-page="purchases"><span class="nav-icon">↙</span><span>Compras</span></button>
           <button class="nav-item" data-page="inventory"><span class="nav-icon">▦</span><span>Inventario</span></button>
@@ -33,6 +36,7 @@
           <button class="nav-item" data-page="finance"><span class="nav-icon">◷</span><span>Finanzas</span></button>
           <button class="nav-item" data-page="environment"><span class="nav-icon">♧</span><span>Impacto ambiental</span><span class="nav-dot"></span></button>
           <button class="nav-item" data-page="contacts"><span class="nav-icon">♙</span><span>Contactos</span></button>
+          <button class="nav-item" data-page="data"><span class="nav-icon">▤</span><span>Datos y Excel</span></button>
         </nav>
         <div class="sidebar-bottom">
           <div class="help-card">
@@ -54,8 +58,8 @@
           <div class="breadcrumb"><span>Tu empresa</span><span class="slash">/</span><strong id="page-title">Inicio</strong></div>
           <div class="topbar-actions">
             <span class="sync-status"><span class="sync-dot"></span>Todo actualizado</span>
+            <button class="theme-toggle" id="theme-toggle" type="button" data-action="theme-toggle" aria-label="Cambiar a tema oscuro" title="Cambiar a tema oscuro">☾</button>
             <button class="icon-button notification-button" aria-label="Notificaciones" data-action="notifications">♧<i></i></button>
-            <button class="button button-primary top-create" id="top-create" data-action="new-sale"><span>＋</span> Nueva venta</button>
           </div>
         </header>
         <div class="demo-banner"><span class="demo-icon">i</span><span>Vista de demostración: la información se guarda en este dispositivo. La conexión con DIAN aún no está configurada.</span><button aria-label="Cerrar aviso" id="dismiss-banner">×</button></div>
@@ -65,6 +69,11 @@
     </div>
     <div class="modal-root" id="modal-root"></div>
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
+    <script src="vendor/xlsx.full.min.js"></script>
+    <script src="vendor/receipt-reader/tesseract/tesseract.min.js"></script>
+    <script src="receipt-reader.js"></script>
+    <script src="excel-workbook.js"></script>
+    <script src="app-core.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

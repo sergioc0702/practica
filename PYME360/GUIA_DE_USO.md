@@ -13,7 +13,11 @@ Completa estos pasos en orden. Puedes dejar datos para después y volver cuando 
 3. **Crea el inventario.** En **Inventario → Agregar producto**, registra primero materias primas e insumos, y luego los productos que vendes o fabricas.
 4. **Prepara una receta.** Al crear un producto terminado, puedes indicar una materia prima o insumo y la cantidad que se usa por unidad. La demostración admite un material por producto.
 5. **Empieza a registrar operaciones.** Usa **Ventas**, **Compras** o **Producción**. Revisa las existencias después de cada movimiento.
-6. **Anota los datos ambientales del mes.** Abre **Impacto ambiental → Registrar datos** y consulta las tendencias y recomendaciones.
+6. **Registra el consumo ambiental.** Abre **Impacto ambiental → Registrar datos** y sube una factura o usa el ejemplo. Revisa los valores antes de confirmarlos.
+
+### Cambiar el tema de pantalla
+
+Pulsa el botón de luna o sol en la barra superior para alternar entre tema claro y oscuro. La preferencia se guarda en este navegador y no cambia los datos de la empresa.
 
 ## 2. Configurar la empresa
 
@@ -94,14 +98,34 @@ Al crear la orden, el sistema descuenta el material estimado. Al terminarla, sum
 
 ## 8. Registrar el impacto ambiental del mes
 
-Puedes consultar estos datos en las facturas de servicios, medidores y registros de producción.
+Puedes cargar un recibo para que Pyme360 encuentre el período y el consumo, o seguir usando la captura manual.
 
-1. Abre **Impacto ambiental** y pulsa **Registrar datos**.
-2. Anota energía en kWh, agua en m³, combustible en litros y unidades producidas.
-3. Anota los residuos orgánicos, aprovechables, no aprovechables y peligrosos en kg.
-4. Registra cuánto se recicló o reutilizó y pulsa **Guardar datos**.
-5. Revisa el resumen, los consumos por unidad producida y las ideas del mes.
-6. Para descargar la información, pulsa **Descargar resumen**.
+### Leer un recibo
+
+1. En **Impacto ambiental**, pulsa **Registrar datos → Subir un recibo**. El navegador abrirá el explorador de archivos para elegir un archivo local; no necesitas escribir su ruta. Si abriste `index.html` directamente y el lector automático no puede iniciarse, usa el lanzador de tu sistema para habilitar el OCR y vuelve a elegir el recibo. En ambos casos Pyme360 permanece en el navegador.
+2. Elige un PDF, JPG o PNG de hasta 15 MB. En PDF se admiten hasta 8 páginas; para mejores resultados, carga la página donde aparece el consumo.
+3. Pyme360 extrae el texto en este computador. Si el PDF es un escaneo o subes una foto, intenta reconocer los caracteres en español.
+4. Revisa el tipo de servicio, el mes y el consumo. Corrige cualquier campo dudoso; si no se encontró, escríbelo tú.
+5. Pulsa **Confirmar y guardar** solo cuando coincida con la factura. Si cierras o cancelas, no se crea un registro.
+
+El recibo original se procesa en memoria y se descarta; Pyme360 conserva el consumo confirmado, su período y el origen del dato. No se sube a un servidor. Al abrir `index.html` con `file://`, el selector local funciona; el OCR puede estar limitado por el navegador. Si no puede leer el archivo, no se guarda ningún dato y puedes ingresarlo manualmente o volver a cargarlo desde el acceso local.
+
+### Probar el ejemplo o registrar manualmente
+
+1. Abre **Impacto ambiental → Registrar datos**.
+2. Elige **Probar con un ejemplo** para ver un consumo ficticio de demostración. Confirma o cancela; la pantalla lo identifica como ejemplo.
+3. También puedes elegir **Ingresar datos manualmente** y anotar energía en kWh, agua en m³, combustible en litros, unidades producidas y residuos en kg.
+4. Revisa el resumen, los consumos por unidad producida y las ideas del mes. Para descargar la información, pulsa **Descargar resumen**.
+
+Pyme360 compara kWh/unidad y m³/unidad con los meses anteriores de tu empresa si hay al menos dos meses con consumo y producción registrados. Si no los hay, muestra **Sin referencia suficiente** mientras construye una referencia propia; no etiqueta un consumo como correcto o incorrecto.
+
+### Consultar el contexto ONU y definir tus metas
+
+1. Abre **Impacto ambiental** usando el lanzador de tu sistema para habilitar la consulta. El servidor local pide a la API pública de la ONU únicamente la serie ODS 7.3.1; no envía datos de la empresa.
+2. Revisa por separado los datos anuales agregados de **Mundo** y **Colombia**, el año más reciente disponible, la unidad y la fuente. Pulsa **Actualizar** para volver a consultar. Si no hay conexión, la pantalla muestra la última respuesta guardada y su fecha; si no hay una copia, puedes reintentar.
+3. Para crear objetivos de la empresa, pulsa **Definir metas** y elige un porcentaje de mejora independiente para energía y agua. Pyme360 calcula cada meta como ese porcentaje menos que el promedio de los últimos tres meses anteriores registrados con consumo y producción.
+
+El ODS 7.3.1 mide energía primaria suministrada por unidad de PIB. Es un indicador anual de la economía, no una lectura de tu fábrica y no se compara directamente con kWh por unidad producida. Las metas son objetivos propios de mejora, no límites universales ni requisitos ambientales. Abrir `index.html` directamente (`file://`) mantiene el registro local, pero no consulta la referencia ONU; usa el acceso local `.bat` para esa consulta.
 
 El selector de período permite consultar los meses guardados. El resumen calcula emisiones con un factor ilustrativo incluido en la demostración; **no es una medición certificada ni un reporte oficial**. Antes de usar emisiones para decisiones formales, deben configurarse factores vigentes y documentar su fuente con un asesor.
 
@@ -113,13 +137,41 @@ El selector de período permite consultar los meses guardados. El resumen calcul
 
 La venta queda marcada como pagada. En **Finanzas** puedes revisar ingresos registrados, valores por cobrar y movimientos de ventas. Este resumen es administrativo; no reemplaza libros contables ni declaraciones.
 
-## 10. Descargar información
+## 10. Descargar o importar un Excel
 
-- **Inventario:** en **Inventario**, pulsa **Exportar** para descargar un archivo CSV.
-- **Impacto ambiental:** pulsa **Descargar resumen** para obtener los registros ambientales en CSV.
-- **Finanzas:** pulsa **Exportar movimientos** para descargar las ventas en CSV.
+Abre **Datos y Excel**. Allí encontrarás tres acciones:
 
-Un archivo CSV se puede abrir en Excel u otra hoja de cálculo. La exportación es una copia de los datos incluidos; no equivale a una copia de seguridad completa del sistema.
+1. **Descargar Excel maestro:** descarga a demanda un solo libro con los datos actuales, divididos en hojas. No se crea un archivo nuevo cada vez que guardas un registro.
+2. **Descargar plantilla vacía:** descarga las mismas hojas y encabezados, sin registros, para organizar datos nuevos.
+3. **Importar Excel de la empresa:** selecciona un archivo `.xlsx` o `.xls` de hasta 10 MB y 10.000 filas.
+
+El libro contiene estas hojas y encabezados:
+
+| Hoja | Columnas principales |
+|---|---|
+| Empresa | Nombre o razón social, NIT, Ciudad, Actividad |
+| Contactos | ID, Nombre, Tipo, Identificación, Correo, Teléfono |
+| Productos | ID, SKU, Nombre, Tipo, Unidad, Existencia, Mínimo, Costo unitario COP, Precio COP, Tipo de IVA, Tarifa IVA % |
+| Recetas | Producto SKU, Material SKU, Cantidad por unidad |
+| Ventas | ID, Número, Cliente, Fecha, Total COP, IVA %, Estado, Forma de pago, Fecha de pago, Medio de pago |
+| Detalle de ventas | Número de venta, Producto SKU, Cantidad |
+| Compras | ID, Número, Proveedor, Fecha, Total COP, Estado, Detalle, Producto SKU, Cantidad |
+| Producción | ID, Número de orden, Producto SKU, Producto, Cantidad, Fecha, Estado, Desperdicio kg, Fecha de terminación |
+| Consumos de producción | Número de orden, Material SKU, Cantidad consumida |
+| Impacto ambiental | Período, consumos, residuos, reciclado o reutilizado, producción, origen, método y fecha de confirmación de energía y agua |
+| Datos adicionales | Entidad, Clave del registro, Campo original, Valor |
+
+Al importar, Pyme360 intenta reconocer los nombres de las hojas y encabezados. Revisa cada hoja, elige qué información contiene y corrige la fila de encabezados o las columnas si hace falta. La muestra y el resumen te permiten revisar el resultado antes de guardar.
+
+- Las coincidencias por NIT, SKU, número de documento o nombre y tipo se presentan como duplicados. Se omiten por defecto.
+- Marca **Actualizar duplicados** solo si quieres completar o actualizar datos. Las celdas vacías del archivo no borran datos guardados.
+- Las filas que no encuentran un cliente, proveedor, producto o documento relacionado quedan **por revisar** y no se importan. Registra o corrige esa referencia y vuelve a importar el archivo.
+- Las columnas que no asignes se conservan en **Datos adicionales**, vinculadas al registro, y vuelven a salir en el Excel maestro.
+- Pulsa **Cancelar** para salir sin guardar. Si el archivo tiene errores o no cabe en el almacenamiento, Pyme360 no aplica la importación.
+
+El libro se genera o lee dentro del navegador; el archivo no se sube a un servidor. Incluye datos principales de negocio y campos adicionales, pero no preferencias ni actividad reciente. Conserva el Excel descargado en un lugar seguro como copia de trabajo.
+
+Los botones CSV existentes en Inventario, Impacto ambiental y Finanzas siguen disponibles para exportar esos resúmenes por separado.
 
 ## 11. Si no puedes registrar algo
 
@@ -131,13 +183,14 @@ Un archivo CSV se puede abrir en Excel u otra hoja de cálculo. La exportación 
 | El inventario no alcanza | Recibe una compra o registra un ajuste después de verificar la cantidad real. |
 | Un registro aparece en cero | Registra el período o movimiento; la pantalla no trae valores precargados. |
 | No aparece una factura aceptada por la DIAN | La demostración no está conectada a DIAN; no transmitió la venta. |
+| La referencia ONU dice que no se pudo conectar | Inicia Pyme360 con el lanzador de tu sistema y deja abierta la ventana de terminal. Se abrirá una dirección local nueva; usa esa pestaña en vez de `index.html` abierto como archivo. Si hay un error al iniciar, la ventana se queda abierta para mostrarlo. |
 
 ## 12. Cuidado de tus datos en esta demostración
 
-- Los datos se guardan en el navegador y dispositivo donde usas el archivo. No aparecen automáticamente en otro computador o navegador.
+- Los datos de tu empresa se guardan en el navegador y dispositivo donde usas el archivo. No aparecen automáticamente en otro computador o navegador. La consulta externa se limita a datos públicos agregados de la ONU ODS 7.3.1.
 - No hay usuarios, permisos ni separación entre cuentas. No ingreses información confidencial o datos reales de clientes en esta versión de prueba.
 - No borres los datos del sitio ni la clave local `pyme360.demo.v2` si necesitas conservar lo que registraste.
-- La demostración no tiene recuperación desde copias en la nube. Descarga los CSV que necesites conservar.
+- La demostración no tiene recuperación desde copias en la nube. Descarga periódicamente el Excel maestro para conservar una copia de trabajo.
 - Para volver a empezar desde cero, elimina `pyme360.demo.v2` del almacenamiento local del navegador y recarga la página. Esa acción borra los datos de esta demostración en ese navegador.
 
 ## Funciones pendientes de la versión conectada
