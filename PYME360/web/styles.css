@@ -135,16 +135,23 @@ a:focus-visible {
   color: var(--ink);
   text-align: left;
 }
-.company-switcher:hover { border-color: #c9d8ca; }
 .company-avatar {
   display: grid;
   place-items: center;
+  flex: 0 0 34px;
   width: 34px;
   height: 34px;
+  padding: 0;
   background: #e9f1e7;
+  border: 0;
   border-radius: 10px;
   color: var(--green-dark);
   font: 700 14px Manrope, sans-serif;
+  cursor: pointer;
+}
+.company-avatar:hover {
+  background: #dcebd8;
+  color: var(--green);
 }
 .company-meta, .profile-meta {
   display: flex;
@@ -154,7 +161,7 @@ a:focus-visible {
 }
 .company-meta strong { font-size: 11px; white-space: nowrap; letter-spacing: -0.1px; }
 .company-meta span, .profile-meta small, .panel-header p, .notice, .empty-state, .metric-top, .metric-foot, .chart-summary span, .chart-legend, .chart-y, .chart-wrap + .chart-footer, .bar-group small, .env-metric small, .env-metric-top, .progress-caption, .finance-card span, .finance-card small, .muted-note, .help-card p, .breadcrumb, .sync-status, .eyebrow, .page-heading p, .table-subtle, .field label, .field-hint, .form-note, .app-footer, .quick-action small, .recommendation p, .env-highlight p, .modal-header p, .toast small, .status, .search-field { color: var(--text-dim); }
-.chevron, .more, .nav-icon, .slash { color: var(--text-dim); }
+.more, .nav-icon, .slash { color: var(--text-dim); }
 
 .nav-label {
   padding: 0 14px 11px;
@@ -269,7 +276,6 @@ a:focus-visible {
   html.sidebar-collapsed .brand-mark { width: 24px; height: 24px; gap: 2px; }
   html.sidebar-collapsed .brand-word,
   html.sidebar-collapsed .company-meta,
-  html.sidebar-collapsed .chevron,
   html.sidebar-collapsed .nav-label,
   html.sidebar-collapsed .nav-item > span:not(.nav-icon),
   html.sidebar-collapsed .help-card,
@@ -283,6 +289,7 @@ a:focus-visible {
     margin: 22px auto;
     padding: 6px;
   }
+  html.sidebar-collapsed .company-avatar { flex-basis: 30px; width: 30px; height: 30px; }
   html.sidebar-collapsed .nav-item {
     justify-content: center;
     width: 44px;
@@ -342,6 +349,10 @@ a:focus-visible {
   background: #7bac6b;
   border-radius: 50%;
 }
+.sync-status.saving .sync-dot { background: #d59d39; animation: sync-pulse 1s ease-in-out infinite alternate; }
+.sync-status.error { color: #a53c35; }
+.sync-status.error .sync-dot { background: #c54d43; }
+@keyframes sync-pulse { to { opacity: .35; } }
 .icon-button {
   position: relative;
   padding: 5px;
@@ -421,6 +432,54 @@ a:focus-visible {
   font-size: 9px;
   font-weight: 700;
 }
+.button-danger {
+  background: var(--red);
+  color: #fff;
+}
+.button-danger:hover { filter: brightness(.92); }
+.button-quiet-danger { color: var(--red); }
+.contact-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 3px; white-space: nowrap; }
+.recipe-builder {
+  padding: 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+}
+.recipe-builder-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.recipe-builder-heading label { color: var(--ink); font-size: 11px; font-weight: 700; }
+.recipe-builder-heading p { margin: 4px 0 0; color: var(--text-dim); font-size: 9px; line-height: 1.5; }
+.recipe-add-button { flex: 0 0 auto; min-height: 30px; padding: 0 9px; font-size: 9px; }
+.recipe-add-button:disabled { cursor: not-allowed; opacity: .55; }
+.recipe-empty-note { margin: 0 0 8px; color: var(--text-dim); font-size: 9px; }
+.recipe-lines { display: grid; gap: 7px; margin-bottom: 7px; }
+.recipe-line { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(145px, .8fr) auto; align-items: end; gap: 8px; }
+.recipe-line label { display: flex; flex-direction: column; gap: 4px; color: var(--text-dim); font-size: 8px; font-weight: 600; }
+.recipe-line select,
+.recipe-amount-control input { width: 100%; min-width: 0; height: 34px; padding: 0 9px; background: var(--surface); border: 1px solid var(--input-border); border-radius: 7px; color: var(--input-text); font-size: 10px; }
+.recipe-amount-control { display: flex; align-items: center; gap: 6px; }
+.recipe-amount-control small { min-width: 37px; color: var(--text-dim); font-size: 9px; }
+.recipe-remove-button { min-height: 32px; }
+.recipe-builder > .field-hint { display: block; }
+.document-lines { display: grid; gap: 8px; margin: 0 0 8px; }
+.document-line { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(100px, .55fr) minmax(125px, .65fr) auto; align-items: end; gap: 8px; padding: 9px; background: var(--surface-soft); border: 1px solid var(--line-soft); border-radius: 9px; }
+.sale-line { grid-template-columns: minmax(180px, 1fr) minmax(80px, .42fr) minmax(130px, .6fr) auto; }
+.document-line label { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--text-dim); font-size: 8px; font-weight: 600; }
+.document-line select, .document-line input { width: 100%; min-width: 0; height: 34px; padding: 0 8px; background: var(--surface); border: 1px solid var(--input-border); border-radius: 7px; color: var(--input-text); font-size: 9px; }
+.document-remove-line { min-height: 32px; }
+.document-add-line { min-height: 30px; padding: 0 8px; font-size: 9px; }
+.purchase-total-preview { margin-top: 7px; color: var(--ink); font-size: 10px; font-weight: 700; }
+.backup-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: auto; }
+.backup-actions .button { margin-top: 0; }
+.pending-panel { margin: 0 0 17px; }
+.pending-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.pending-item { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px; border: 1px solid var(--line-soft); border-radius: 9px; background: var(--surface-soft); color: var(--ink); text-align: left; }
+.pending-item:hover { border-color: var(--green); background: var(--surface-hover); }
+.pending-item-dot { display: grid; width: 23px; height: 23px; flex: 0 0 23px; place-items: center; border-radius: 7px; background: var(--amber-soft); color: var(--amber); font-size: 10px; font-weight: 700; }
+.pending-item > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
+.pending-item strong { font-size: 9px; }
+.pending-item small { color: var(--text-dim); font-size: 8px; }
+.pending-item-arrow { margin-left: auto; color: var(--green); font-size: 16px; }
+.pending-clear { margin: 0; color: var(--text-dim); font-size: 10px; }
 .mobile-menu {
   display: none;
   background: transparent;
@@ -1099,6 +1158,9 @@ td small {
   vertical-align: middle;
 }
 .contact-cell { display: flex; align-items: center; }
+.contact-role-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.contact-checkbox { display: flex !important; align-items: center; gap: 8px; color: var(--ink-soft) !important; font-size: 10px !important; font-weight: 600; }
+.contact-checkbox input { width: auto !important; height: auto !important; margin: 0; padding: 0; background: transparent; border: 0; border-radius: 3px; accent-color: var(--green); }
 .app-footer {
   display: flex;
   align-items: center;
@@ -1329,6 +1391,10 @@ html[data-theme="dark"] .contact-avatar {
   background: #2a3b30;
   color: var(--green-dark);
 }
+html[data-theme="dark"] .company-avatar:hover {
+  background: #354b3a;
+  color: var(--green);
+}
 html[data-theme="dark"] .profile-button,
 html[data-theme="dark"] .company-switcher,
 html[data-theme="dark"] .theme-toggle { color: var(--ink); }
@@ -1360,7 +1426,6 @@ html[data-theme="dark"] .app-footer {
 }
 html[data-theme="dark"] .slash,
 html[data-theme="dark"] .nav-icon,
-html[data-theme="dark"] .chevron,
 html[data-theme="dark"] .more { color: var(--text-dim); }
 html[data-theme="dark"] .date-pill,
 html[data-theme="dark"] .search-field,
@@ -1372,6 +1437,9 @@ html[data-theme="dark"] .theme-toggle {
   border-color: var(--line);
   color: var(--ink-soft);
 }
+html[data-theme="dark"] .recipe-builder { background: var(--surface-muted); border-color: var(--line); }
+html[data-theme="dark"] .recipe-builder-heading label { color: var(--ink); }
+html[data-theme="dark"] .button-danger { background: #a84b45; color: #fff; }
 html[data-theme="dark"] .search-field input { color: var(--ink); }
 html[data-theme="dark"] .search-field input::placeholder { color: var(--text-dim); }
 html[data-theme="dark"] .quick-action {
@@ -1445,7 +1513,7 @@ html[data-theme="dark"] .theme-toggle:hover { border-color: #547360; color: var(
 /* Componentes de importación y Excel */
 .main-nav { flex: 1; overflow-y: auto; min-height: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.excel-actions-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.excel-actions-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .excel-action-card { min-height: 204px; padding: 19px; display: flex; flex-direction: column; align-items: flex-start; }
 .excel-action-card h2 { margin: 13px 0 5px; font: 700 14px Manrope, sans-serif; }
 .excel-action-card p { margin: 0 0 17px; color: var(--text-dim); font-size: 10px; line-height: 1.55; }
@@ -1495,7 +1563,7 @@ html[data-theme="dark"] .excel-summary-grid > div { background: var(--surface-mu
   }
   .metric-grid, .env-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .benchmark-body { grid-template-columns: minmax(150px, .7fr) minmax(0, 1.3fr); gap: 12px; }
-  .excel-actions-grid { grid-template-columns: 1fr; }
+  .excel-actions-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .excel-action-card { min-height: 0; }
   .excel-map-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -1513,7 +1581,7 @@ html[data-theme="dark"] .excel-summary-grid > div { background: var(--surface-mu
   .topbar { padding: 0 20px; gap: 12px; }
   .breadcrumb { margin-right: auto; }
   .breadcrumb > span:first-child { display: none; }
-  .sync-status { display: none; }
+  .sync-status { display: flex; white-space: nowrap; font-size: 9px; }
   .demo-banner { padding-left: 20px; padding-right: 20px; }
   .page-content { padding: 26px 20px 35px; }
   .dashboard-grid, .env-layout { grid-template-columns: 1fr; }
@@ -1572,6 +1640,20 @@ html[data-theme="dark"] .excel-summary-grid > div { background: var(--surface-mu
   .app-footer span:nth-child(2) { display: none; }
   .form-grid { grid-template-columns: 1fr; }
   .field.full { grid-column: auto; }
+  .recipe-builder-heading { flex-direction: column; }
+  .recipe-add-button { width: 100%; }
+  .recipe-line { grid-template-columns: minmax(0, 1fr) auto; }
+  .recipe-material-field { grid-column: 1 / -1; }
+  .recipe-amount-field { grid-column: 1; }
+  .recipe-remove-button { grid-column: 2; align-self: end; }
+  .document-line, .sale-line { grid-template-columns: minmax(0, 1fr) auto; }
+  .document-line label:first-child { grid-column: 1 / -1; }
+  .purchase-line label:nth-child(2) { grid-column: 1; }
+  .purchase-line label:nth-child(3) { grid-column: 1; }
+  .document-remove-line { grid-column: 2; grid-row: 2 / span 2; align-self: end; }
+  .pending-list { grid-template-columns: 1fr; }
+  .backup-actions { flex-direction: column; width: 100%; }
+  .backup-actions .button { width: 100%; }
   .modal-root { padding: 10px; }
   .modal { max-height: calc(100vh - 20px); }
   .modal-header, .modal-form { padding-left: 17px; padding-right: 17px; }
@@ -1581,4 +1663,61 @@ html[data-theme="dark"] .excel-summary-grid > div { background: var(--surface-mu
   .excel-import-footer button { width: 100%; }
   .receipt-choice-grid { grid-template-columns: 1fr; }
   .receipt-choice { min-height: 0; }
+}
+
+/* Tipografía más cómoda para lectura en pantalla */
+body { font-size: 16px; line-height: 1.5; }
+.company-meta strong, .profile-meta strong, .help-card strong { font-size: 13px; }
+.company-meta span, .profile-meta small, .help-card p, .text-button,
+.breadcrumb, .sync-status, .nav-label, .nav-count { font-size: 12px; }
+.nav-item { min-height: 44px; height: auto; font-size: 14px; }
+.button { min-height: 40px; font-size: 13px; }
+.button-quiet, .recipe-add-button, .document-add-line, .panel-link { font-size: 12px; }
+.demo-banner { min-height: 42px; font-size: 13px; line-height: 1.5; }
+.eyebrow { font-size: 11px; }
+.page-heading p { font-size: 14px; line-height: 1.5; }
+.date-pill { min-height: 38px; height: auto; font-size: 13px; }
+.metric-top, .metric-foot, .panel-header p, .quick-action strong,
+.quick-action small, .pending-item strong, .pending-item small,
+.pending-clear, .notice, .muted-note, .table-subtle,
+.recommendation p, .env-highlight p { font-size: 12px; line-height: 1.5; }
+.panel-header h2 { font-size: 15px; }
+.chart-summary span, .chart-legend, .chart-y, .bar-group small,
+.chart-wrap + .chart-footer, .env-metric small, .env-metric-top,
+.progress-caption, .finance-card span, .finance-card small { font-size: 11px; }
+th { font-size: 12px; }
+td, td strong { font-size: 13px; }
+td small, .status { font-size: 12px; }
+.reading-source, .public-reference strong, .public-reference p,
+.benchmark-stat span, .benchmark-stat small, .benchmark-year,
+.benchmark-legend, .public-benchmark-note, .benchmark-error,
+.env-target-heading p, .env-target-card-top > strong,
+.env-target-card > p:not(.env-target-value), .env-target-actual,
+.receipt-choice strong, .receipt-choice small, .receipt-review-intro p,
+.receipt-warning, .receipt-preview, .receipt-progress + p { font-size: 12px; }
+.recipe-builder-heading label { font-size: 13px; }
+.recipe-builder-heading p, .recipe-empty-note, .recipe-line label,
+.recipe-amount-control small, .document-line label,
+.purchase-total-preview { font-size: 12px; }
+.recipe-line select, .recipe-amount-control input,
+.document-line select, .document-line input { font-size: 14px; }
+.contact-checkbox { font-size: 12px !important; }
+.app-footer { font-size: 11px; }
+.modal-header h2 { font-size: 19px; }
+.modal-header p, .field label { font-size: 13px; }
+.field input, .field select, .field textarea { min-height: 42px; height: auto; font-size: 16px; }
+.field textarea { min-height: 84px; }
+.field-hint, .form-note { font-size: 12px; line-height: 1.55; }
+.toast { font-size: 13px; line-height: 1.5; }
+.toast small { font-size: 12px; }
+.excel-action-card p, .excel-sheet-list span, .excel-sheet-card summary,
+.excel-sheet-card summary span, .excel-config-row label, .excel-map-field,
+.excel-config-row select, .excel-map-field select, .excel-sample,
+.excel-summary-grid span, .excel-update-option, .excel-duplicate-list,
+.excel-issues table { font-size: 12px; }
+.excel-config-row select, .excel-map-field select { min-height: 40px; height: auto; }
+
+@media (max-width: 560px) {
+  .sync-status { font-size: 11px; }
+  .metric-top { font-size: 11px; }
 }

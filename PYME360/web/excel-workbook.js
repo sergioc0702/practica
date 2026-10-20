@@ -3,12 +3,14 @@
 
   var definitions = [
     { key: "company", name: "Empresa", headers: ["Nombre o razón social", "NIT", "Ciudad", "Actividad"], fields: ["company", "companyNit", "city", "activityType"] },
-    { key: "contacts", name: "Contactos", headers: ["ID", "Nombre", "Tipo", "Identificación", "Correo", "Teléfono"], fields: ["id", "name", "role", "idNumber", "email", "phone"] },
+    { key: "contacts", name: "Contactos", headers: ["ID", "Nombre", "Tipo", "Cliente ordinario", "Identificación", "Correo", "Teléfono"], fields: ["id", "name", "role", "ordinaryCustomer", "idNumber", "email", "phone"] },
     { key: "products", name: "Productos", headers: ["ID", "SKU", "Nombre", "Tipo", "Unidad", "Existencia", "Mínimo", "Costo unitario COP", "Precio COP", "Tipo de IVA", "Tarifa IVA %"], fields: ["id", "sku", "name", "type", "unit", "stock", "min", "cost", "price", "taxType", "taxRate"] },
     { key: "recipes", name: "Recetas", headers: ["Producto SKU", "Material SKU", "Cantidad por unidad"], fields: ["productSku", "materialSku", "amount"] },
-    { key: "sales", name: "Ventas", headers: ["ID", "Número", "Cliente", "Fecha", "Total COP", "IVA %", "Estado", "Forma de pago", "Fecha de pago", "Medio de pago"], fields: ["id", "number", "customer", "date", "total", "taxRate", "status", "payment", "paidDate", "method"] },
-    { key: "saleLines", name: "Detalle de ventas", headers: ["Número de venta", "Producto SKU", "Cantidad"], fields: ["saleNumber", "sku", "quantity"] },
-    { key: "purchases", name: "Compras", headers: ["ID", "Número", "Proveedor", "Fecha", "Total COP", "Estado", "Detalle", "Producto SKU", "Cantidad"], fields: ["id", "number", "supplier", "date", "total", "status", "detail", "productSku", "quantity"] },
+    { key: "sales", name: "Ventas", headers: ["ID", "Número", "Cliente", "Fecha", "Total COP", "Descuento COP", "IVA %", "Estado de pago", "Forma de pago", "Fecha de pago", "Medio de pago", "Seguimiento de factura", "Número del documento externo", "Fecha del documento externo"], fields: ["id", "number", "customer", "date", "total", "discount", "taxRate", "status", "payment", "paidDate", "method", "invoiceFollowUpStatus", "externalInvoiceNumber", "externalInvoiceDate"] },
+    { key: "saleLines", name: "Detalle de ventas", headers: ["Número de venta", "Producto SKU", "Cantidad", "Precio unitario COP", "IVA %"], fields: ["saleNumber", "sku", "quantity", "unitPrice", "taxRate"] },
+    { key: "purchases", name: "Compras", headers: ["ID", "Número", "Proveedor", "Fecha", "Total COP", "Estado", "Detalle"], fields: ["id", "number", "supplier", "date", "total", "status", "detail"] },
+    { key: "purchaseLines", name: "Detalle de compras", headers: ["Número de compra", "Producto SKU", "Cantidad", "Costo total COP"], fields: ["purchaseNumber", "sku", "quantity", "total"] },
+    { key: "salePayments", name: "Pagos recibidos", headers: ["ID de pago", "Número de venta", "Fecha", "Valor recibido COP", "Medio de pago"], fields: ["paymentId", "saleNumber", "date", "amount", "method"] },
     { key: "production", name: "Producción", headers: ["ID", "Número de orden", "Producto SKU", "Producto", "Cantidad", "Fecha", "Estado", "Desperdicio kg", "Fecha de terminación"], fields: ["id", "number", "productSku", "product", "quantity", "date", "status", "wasteKg", "completedDate"] },
     { key: "productionInputs", name: "Consumos de producción", headers: ["Número de orden", "Material SKU", "Cantidad consumida"], fields: ["productionNumber", "sku", "quantity"] },
     { key: "environment", name: "Impacto ambiental", headers: ["Período", "Energía kWh", "Agua m³", "Combustible L", "Residuos orgánicos kg", "Aprovechables kg", "No aprovechables kg", "Peligrosos kg", "Reciclado o reutilizado kg", "Producción unidades", "Origen energía", "Método energía", "Fecha de confirmación energía", "Origen agua", "Método agua", "Fecha de confirmación agua"], fields: ["period", "electricityKwh", "waterM3", "fuelL", "organicKg", "recyclableKg", "nonRecyclableKg", "hazardousKg", "recycledKg", "productionUnits", "energySource", "energyMethod", "energyCapturedAt", "waterSource", "waterMethod", "waterCapturedAt"] },
@@ -47,12 +49,25 @@
       case "saleLines":
         (data.sales || []).forEach(function (sale) {
           (sale.lines || []).forEach(function (line) {
-            rows.push({ saleNumber: sale.number, sku: line.sku, quantity: line.quantity });
+            rows.push({ saleNumber: sale.number, sku: line.sku, quantity: line.quantity, unitPrice: line.unitPrice, taxRate: line.taxRate });
           });
         });
         return rows;
       case "purchases":
         return data.purchases || [];
+      case "purchaseLines":
+        (data.purchases || []).forEach(function (purchase) {
+          var lines = Array.isArray(purchase.lines) && purchase.lines.length ? purchase.lines : (purchase.productSku ? [{ sku: purchase.productSku, quantity: purchase.quantity, total: purchase.total }] : []);
+          lines.forEach(function (line) { rows.push({ purchaseNumber: purchase.number, sku: line.sku, quantity: line.quantity, total: line.total }); });
+        });
+        return rows;
+      case "salePayments":
+        (data.sales || []).forEach(function (sale) {
+          (sale.payments || []).forEach(function (payment) {
+            rows.push({ paymentId: payment.id, saleNumber: sale.number, date: payment.date, amount: payment.amount, method: payment.method });
+          });
+        });
+        return rows;
       case "production":
         return (data.production || []).map(function (order) {
           var product = (data.inventory || []).find(function (entry) {

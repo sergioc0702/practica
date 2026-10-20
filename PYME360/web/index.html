@@ -21,11 +21,10 @@
           </a>
           <button class="sidebar-toggle" type="button" data-action="sidebar-toggle" aria-controls="sidebar" aria-expanded="true" aria-label="Contraer menú" title="Contraer menú">‹</button>
         </div>
-        <button class="company-switcher" data-action="setup" aria-label="Configurar empresa">
-          <span class="company-avatar">A</span>
+        <div class="company-switcher">
+          <button class="company-avatar" type="button" data-action="setup" aria-label="Configurar empresa" title="Configurar empresa">+</button>
           <span class="company-meta"><strong>Configura tu empresa</strong><span>Espacio de trabajo</span></span>
-          <span class="chevron">⌄</span>
-        </button>
+        </div>
         <div class="nav-label">TU NEGOCIO</div>
         <nav class="main-nav" aria-label="Navegación principal" id="primary-navigation">
           <button class="nav-item active" data-page="overview" aria-current="page"><span class="nav-icon">⌂</span><span>Inicio</span></button>
@@ -57,12 +56,12 @@
           <button class="mobile-menu" id="mobile-menu" aria-label="Abrir menú">☰</button>
           <div class="breadcrumb"><span>Tu empresa</span><span class="slash">/</span><strong id="page-title">Inicio</strong></div>
           <div class="topbar-actions">
-            <span class="sync-status"><span class="sync-dot"></span>Todo actualizado</span>
+            <span class="sync-status" id="persistence-status" role="status" aria-live="polite"><span class="sync-dot"></span>Conectando…</span>
             <button class="theme-toggle" id="theme-toggle" type="button" data-action="theme-toggle" aria-label="Cambiar a tema oscuro" title="Cambiar a tema oscuro">☾</button>
             <button class="icon-button notification-button" aria-label="Notificaciones" data-action="notifications">♧<i></i></button>
           </div>
         </header>
-        <div class="demo-banner"><span class="demo-icon">i</span><span>Vista de demostración: la información se guarda en este dispositivo. La conexión con DIAN aún no está configurada.</span><button aria-label="Cerrar aviso" id="dismiss-banner">×</button></div>
+        <div class="demo-banner"><span class="demo-icon">i</span><span id="local-persistence-message">Los datos se guardan en SQLite en este computador. Pyme360 no emite ni transmite documentos a la DIAN.</span><button aria-label="Cerrar aviso" id="dismiss-banner">×</button></div>
         <div class="page-content" id="page-content"></div>
         <footer class="app-footer"><span>Pyme360</span><span>Hecho para que tu negocio avance, sin complicaciones.</span><span>Ayuda · Privacidad</span></footer>
       </main>

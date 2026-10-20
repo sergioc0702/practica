@@ -1,7 +1,7 @@
 window.Pyme360App = (function () {
   "use strict";
 
-  // v2 starts clean for each browser; legacy demo records remain untouched in v1.
+  // Este estado del navegador solo se consulta como fuente de migración a SQLite.
   /* Configuración, preferencias y almacenamiento */
   const STORAGE_KEY = "pyme360.demo.v2";
   const THEME_KEY = "pyme360.theme";
@@ -23,11 +23,21 @@ window.Pyme360App = (function () {
   const now = new Date();
   let currentPeriod = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
   let currentPage = "overview";
-  let state = loadState();
+  let state = seedState();
+  let persistedState = seedState();
+  let stateRevision = 0;
+  let persistenceReady = false;
+  let persistencePending = false;
+  let persistenceBlocked = false;
+  let readOnlyMode = false;
+  let deferredRender = false;
+  let deferredClose = false;
+  let deferredToasts = [];
   let currentTheme = loadTheme();
   let sidebarCollapsed = loadSidebarCollapsed();
   let importSession = null;
   let receiptSession = null;
+  let backupSession = null;
   let activeReceiptRead = null;
   let publicBenchmarkState = { status: "idle", data: null, cachedAt: "", error: "" };
 
@@ -68,8 +78,8 @@ window.Pyme360App = (function () {
       item.setAttribute("title", name);
     });
 
-    var companyButton = document.querySelector(".company-switcher");
-    if (companyButton) companyButton.setAttribute("title", "Configura tu empresa");
+    var companyButton = document.querySelector(".company-avatar");
+    if (companyButton) companyButton.setAttribute("title", "Configurar empresa");
     var profileButton = document.querySelector(".profile-button");
     if (profileButton) profileButton.setAttribute("title", "Mi usuario · Administrador");
 
@@ -115,16 +125,34 @@ window.Pyme360App = (function () {
     };
   }
 
-  function loadState() {
+  function normalizeState(parsed) {
     try {
-      var saved = localStorage.getItem(STORAGE_KEY);
-      if (!saved) return seedState();
-      var parsed = JSON.parse(saved);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("El estado guardado no tiene un formato válido.");
+      parsed = JSON.parse(JSON.stringify(parsed));
       var defaults = seedState();
       Object.keys(defaults).forEach(function (key) {
         if (Array.isArray(defaults[key])) {
           if (!Array.isArray(parsed[key])) parsed[key] = defaults[key];
         } else if (parsed[key] == null) parsed[key] = defaults[key];
+      });
+      parsed.contacts.forEach(function (contact) {
+        if (typeof contact.ordinaryCustomer !== "boolean") contact.ordinaryCustomer = false;
+      });
+      parsed.sales.forEach(function (sale) {
+        if (typeof sale.inventoryApplied !== "boolean") sale.inventoryApplied = String(sale.id || "").indexOf("imp-") !== 0;
+        if (!Array.isArray(sale.payments)) sale.payments = [];
+        if (["Por revisar", "Registrada por fuera de Pyme360", "No aplica, según revisión del usuario"].indexOf(sale.invoiceFollowUpStatus) < 0) sale.invoiceFollowUpStatus = "Por revisar";
+        if (typeof sale.externalInvoiceNumber !== "string") sale.externalInvoiceNumber = "";
+        if (typeof sale.externalInvoiceDate !== "string") sale.externalInvoiceDate = "";
+        if (!sale.payments.length && sale.status === "Pagada") {
+          sale.payments.push({ id: "legacy-" + sale.id, date: sale.paidDate || sale.date || today(), amount: Number(sale.total) || 0, method: sale.method || sale.payment || "Pago registrado", legacy: true });
+        }
+      });
+      parsed.purchases.forEach(function (purchase) {
+        if (typeof purchase.inventoryApplied !== "boolean") purchase.inventoryApplied = String(purchase.id || "").indexOf("imp-") !== 0 && purchase.status !== "Por recibir";
+      });
+      parsed.production.forEach(function (order) {
+        if (typeof order.inventoryApplied !== "boolean") order.inventoryApplied = String(order.id || "").indexOf("imp-") !== 0;
       });
       if (!parsed.environmentTargets || typeof parsed.environmentTargets !== "object") parsed.environmentTargets = defaults.environmentTargets;
       ["energyReductionPct", "waterReductionPct"].forEach(function (key) {
@@ -139,16 +167,203 @@ window.Pyme360App = (function () {
       });
       return parsed;
     } catch (error) {
-      return seedState();
+      throw error;
     }
   }
 
-  function saveState() {
+  function readLegacyState() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      var saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? normalizeState(JSON.parse(saved)) : null;
     } catch (error) {
-      toast("No se pudo guardar", "El navegador no permitió guardar más datos. Exporta la información antes de cerrar.");
+      return null;
     }
+  }
+
+  function setPersistenceStatus(label, mode) {
+    var status = document.getElementById("persistence-status");
+    if (!status) return;
+    status.className = "sync-status" + (mode ? " " + mode : "");
+    status.innerHTML = '<span class="sync-dot"></span>' + esc(label);
+  }
+
+  function cloneState(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function setSaveBusyControls(disabled) {
+    document.querySelectorAll("#modal-root input, #modal-root select, #modal-root textarea, #modal-root button").forEach(function (control) {
+      if (disabled) {
+        control.setAttribute("data-was-disabled", control.disabled ? "true" : "false");
+        control.disabled = true;
+      } else {
+        control.disabled = control.getAttribute("data-was-disabled") === "true";
+        control.removeAttribute("data-was-disabled");
+      }
+    });
+  }
+
+  function persistSnapshot(snapshot) {
+    if (persistencePending) return Promise.reject(new Error("Pyme360 está guardando otro cambio. Espera un momento y vuelve a intentarlo."));
+    persistencePending = true;
+    setPersistenceStatus("Guardando…", "saving");
+    setSaveBusyControls(true);
+    var request = !persistenceReady || persistenceBlocked ?
+      Promise.reject(new Error(persistenceBlocked ? "Recarga Pyme360 para obtener los datos más recientes." : "El servidor local no está listo. Abre Pyme360 desde el lanzador y vuelve a intentarlo.")) :
+      fetch("/api/v1/state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedRevision: stateRevision, state: snapshot })
+      });
+    return request.then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (payload) {
+        if (!response.ok) {
+          var error = new Error(payload.error || "SQLite no confirmó el guardado.");
+          error.status = response.status;
+          error.payload = payload;
+          throw error;
+        }
+        stateRevision = Number(payload.revision) || stateRevision + 1;
+        persistedState = cloneState(snapshot);
+        return payload;
+      });
+    }).then(function (result) {
+      persistencePending = false;
+      setSaveBusyControls(false);
+      setPersistenceStatus("Guardado en este equipo", "saved");
+      if (deferredClose) closeModal(true);
+      if (deferredRender) render(true);
+      deferredClose = false;
+      deferredRender = false;
+      var messages = deferredToasts.slice();
+      deferredToasts = [];
+      messages.forEach(function (item) { showToast(item.title, item.detail); });
+      return result;
+    }).catch(function (error) {
+      persistencePending = false;
+      setSaveBusyControls(false);
+      deferredToasts = [];
+      deferredClose = false;
+      if (error.status === 409) {
+        persistenceBlocked = true;
+        setPersistenceStatus("Necesita recargar", "error");
+        deferredRender = false;
+        openModal("Los datos cambiaron", "Otra pestaña guardó una versión más reciente. Recarga Pyme360 para continuar con esos datos.", '<div class="modal-form"><p>Este cambio no se guardó. Si lo necesitas, anótalo antes de recargar.</p><div class="modal-footer"><button class="button button-primary" data-action="state-reload">Recargar Pyme360</button></div></div>');
+      } else {
+        state = cloneState(persistedState);
+        if (deferredRender) render(true);
+        deferredRender = false;
+        setPersistenceStatus("No se pudo guardar", "error");
+        var explanation = error.status ? error.message : "No se pudo conectar con el servidor local. Deja abierta la ventana del lanzador e inténtalo de nuevo.";
+        showToast("No se guardó el cambio", explanation || "Revisa que el servidor local siga abierto e inténtalo de nuevo.");
+      }
+      throw error;
+    });
+  }
+
+  function saveState() {
+    var snapshot;
+    try { snapshot = cloneState(state); }
+    catch (error) { showToast("No se guardó el cambio", "No pudimos preparar los datos para SQLite."); return Promise.resolve(false); }
+    return persistSnapshot(snapshot).catch(function () { return false; });
+  }
+
+  async function initializeLocalState() {
+    if (window.location.protocol === "file:") {
+      readOnlyMode = true;
+      state = readLegacyState() || seedState();
+      persistedState = cloneState(state);
+      setPersistenceStatus("Abre con el lanzador", "error");
+      var localMessage = document.getElementById("local-persistence-message");
+      if (localMessage) localMessage.textContent = "Abre Pyme360 con el lanzador de tu computador para guardar en SQLite. Esta pestaña abierta como archivo no permite registrar cambios.";
+      render();
+      showToast("Falta iniciar el servidor local", "Abre Pyme360 con el lanzador para guardar los cambios en SQLite.");
+      return;
+    }
+    setPersistenceStatus("Conectando…", "saving");
+    try {
+      var response = await fetch("/api/v1/state", { cache: "no-store" });
+      if (!response.ok) throw new Error("El servidor local no respondió correctamente.");
+      var payload = await response.json();
+      stateRevision = Number(payload.revision) || 0;
+      if (payload.state) {
+        state = normalizeState(payload.state);
+        persistedState = cloneState(state);
+        persistenceReady = true;
+      } else {
+        var legacy = readLegacyState();
+        state = legacy || seedState();
+        persistedState = seedState();
+        persistenceReady = true;
+        if (legacy) {
+          try {
+            var result = await persistSnapshot(cloneState(legacy));
+            void result;
+            showToast("Datos anteriores migrados", "La copia original del navegador se conservó sin cambios.");
+          } catch (migrationError) {
+            if (migrationError.status === 409) {
+              var latest = await fetch("/api/v1/state", { cache: "no-store" }).then(function (item) { return item.json(); });
+              if (latest.state) {
+                state = normalizeState(latest.state);
+                persistedState = cloneState(state);
+                stateRevision = Number(latest.revision) || 0;
+                persistenceBlocked = false;
+                document.getElementById("modal-root").innerHTML = "";
+                persistenceReady = true;
+                setPersistenceStatus("Guardado en este equipo", "saved");
+                render();
+                showToast("Datos anteriores conservados", "Otra pestaña terminó la migración. Cargamos lo que ya estaba en SQLite sin combinar registros.");
+                return;
+              }
+            }
+            throw migrationError;
+          }
+        }
+      }
+      persistenceReady = true;
+      setPersistenceStatus("Guardado en este equipo", "saved");
+      render();
+    } catch (error) {
+      persistenceReady = false;
+      if (!persistenceBlocked) {
+        readOnlyMode = true;
+        state = readLegacyState() || cloneState(persistedState);
+        persistedState = cloneState(state);
+        setPersistenceStatus("Sin conexión local", "error");
+        var localMessage = document.getElementById("local-persistence-message");
+        if (localMessage) localMessage.textContent = "No se pudo conectar con SQLite. Deja abierta la ventana del lanzador y recarga esta página.";
+        render();
+        showToast("No se pudo conectar con SQLite", error instanceof TypeError ? "Deja abierta la ventana del lanzador y recarga Pyme360." : (error.message || "Deja abierta la ventana del servidor y recarga Pyme360."));
+      }
+    }
+  }
+
+  function salePaidAmount(sale) {
+    if (Array.isArray(sale.payments) && sale.payments.length) {
+      return sale.payments.reduce(function (sum, payment) { return sum + (Number(payment.amount) || 0); }, 0);
+    }
+    return sale.status === "Pagada" ? Number(sale.total) || 0 : 0;
+  }
+
+  function saleOutstanding(sale) {
+    return Math.max(0, (Number(sale.total) || 0) - salePaidAmount(sale));
+  }
+
+  function refreshSaleStatus(sale) {
+    var paid = salePaidAmount(sale);
+    var total = Number(sale.total) || 0;
+    sale.status = paid >= total && total > 0 ? "Pagada" : paid > 0 ? "Pago parcial" : "Pendiente de pago";
+    return sale.status;
+  }
+
+  function purchaseLines(purchase) {
+    if (Array.isArray(purchase.lines) && purchase.lines.length) {
+      var hasLineTotals = purchase.lines.every(function (line) { return Number.isFinite(Number(line.total)); });
+      return purchase.lines.map(function (line) {
+        return { sku: line.sku, quantity: Number(line.quantity) || 0, total: Number.isFinite(Number(line.total)) ? Number(line.total) : (hasLineTotals ? 0 : (Number(purchase.total) || 0) / purchase.lines.length) };
+      });
+    }
+    return purchase.productSku ? [{ sku: purchase.productSku, quantity: Number(purchase.quantity) || 0, total: Number(purchase.total) || 0 }] : [];
   }
 
   /* Formato y utilidades compartidas */
@@ -211,17 +426,14 @@ window.Pyme360App = (function () {
   }
 
   function getPendingSalesCount() {
-    return state.sales.filter(function (sale) { return sale.status === "Pendiente de pago"; }).length;
+    return state.sales.filter(function (sale) { return saleOutstanding(sale) > 0; }).length;
   }
 
   function updateBranding() {
     var companyName = state.company || "Configura tu empresa";
-    var companyPrefix = state.company ? state.company.trim().charAt(0).toUpperCase() : "＋";
-
     document.getElementById("page-title").textContent = pages[currentPage];
     document.querySelector(".company-switcher .company-meta strong").textContent = companyName;
     document.querySelector(".breadcrumb > span:first-child").textContent = state.company || "Tu empresa";
-    document.querySelector(".company-avatar").textContent = companyPrefix;
   }
 
   function updateNavigationState() {
@@ -236,6 +448,11 @@ window.Pyme360App = (function () {
   }
 
   function render() {
+    if (persistencePending) { deferredRender = true; return; }
+    renderNow();
+  }
+
+  function renderNow() {
     updateBranding();
     document.getElementById("page-content").innerHTML = pageRenderer(currentPage)();
     updateNavigationState();
@@ -265,7 +482,7 @@ window.Pyme360App = (function () {
   function getStatusStyle(status, forcedStyle) {
     if (forcedStyle) return forcedStyle;
     if (status === "Pagada" || status === "Terminada" || status === "Recibida") return "";
-    if (status === "Por recibir" || status === "Pendiente de pago" || status.indexOf("Pendiente") === 0) return "pending";
+    if (status === "Por recibir" || status === "Pendiente de pago" || status === "Pago parcial" || status.indexOf("Pendiente") === 0) return "pending";
     return "neutral";
   }
 
@@ -274,7 +491,8 @@ window.Pyme360App = (function () {
   }
 
   function renderOverview() {
-    var due = state.sales.filter(function (sale) { return sale.status === "Pendiente de pago"; }).reduce(function (sum, sale) { return sum + sale.total; }, 0);
+    var pendingSales = state.sales.filter(function (sale) { return saleOutstanding(sale) > 0; });
+    var due = pendingSales.reduce(function (sum, sale) { return sum + saleOutstanding(sale); }, 0);
     var record = currentEnvironment();
     var emissions = estimateEmissions(record);
     var monthSales = state.sales.filter(function (sale) { return sale.date.slice(0, 7) === currentPeriod; }).reduce(function (sum, sale) { return sum + sale.total; }, 0);
@@ -297,32 +515,53 @@ window.Pyme360App = (function () {
     return heading(day.toUpperCase() + " · " + monthName(currentPeriod).toUpperCase(), state.company ? 'Resumen de tu negocio <span style="font-size:22px">👋</span>' : '¡Empecemos con lo básico! <span style="font-size:22px">👋</span>', state.company ? "Aquí tienes un resumen claro de cómo va tu negocio." : "Configura la empresa y registra tus propios datos para empezar.", '<span class="date-pill"><span>▣</span> ' + monthName(currentPeriod) + " " + currentPeriod.slice(0, 4) + '</span>') + onboarding +
       '<section class="metric-grid">' +
       metricCard("Ventas del mes", money(monthSales), "Registrado en " + monthName(currentPeriod), "↗", false) +
-      metricCard("Por cobrar", money(due), state.sales.filter(function (sale) { return sale.status === "Pendiente de pago"; }).length + " facturas pendientes", "◷", false) +
+       metricCard("Por cobrar", money(due), pendingSales.length + " facturas pendientes", "◷", false) +
       metricCard("Órdenes activas", String(state.production.filter(function (order) { return order.status === "En proceso"; }).length).padStart(2, "0"), "Producción en curso", "⚙", false) +
       metricCard("Emisiones estimadas", num(emissions / 1000, 2) + " t", "Estimación demostrativa", "♧", true) + '</section>' +
-      '<section class="dashboard-grid"><div class="panel"><div class="panel-header"><div><h2>Tu operación, de un vistazo</h2><p>Un resumen mensual para tomar mejores decisiones.</p></div><span class="status neutral">Últimos meses</span></div><div class="panel-body"><div class="chart-summary"><strong>' + num(record.productionUnits) + '</strong><span>unidades producidas este mes</span><div class="chart-legend"><span><i class="legend-dot"></i>Producción</span><span><i class="legend-dot pale"></i>Energía</span></div></div><div class="chart-wrap"><div class="chart-y"><span>Alto</span><span>Medio</span><span>Bajo</span><span>0</span></div><div class="chart-bars">' + bars + '</div></div><div class="chart-footer"><span>Tendencia relativa por indicador</span><span>Datos registrados</span></div></div></div>' +
+       '<section class="dashboard-grid"><div class="panel"><div class="panel-header"><div><h2>Tu operación, de un vistazo</h2><p>Un resumen mensual para tomar mejores decisiones.</p></div><span class="status neutral">Últimos meses</span></div><div class="panel-body"><div class="chart-summary"><strong>' + num(record.productionUnits) + '</strong><span>unidades producidas este mes</span><div class="chart-legend"><span><i class="legend-dot"></i>Producción</span><span><i class="legend-dot pale"></i>Energía</span></div></div><div class="chart-wrap"><div class="chart-y"><span>Alto</span><span>Medio</span><span>Bajo</span><span>0</span></div><div class="chart-bars">' + bars + '</div></div><div class="chart-footer"><span>Tendencia relativa por indicador</span><span>Datos registrados</span></div></div></div>' +
       '<div class="panel"><div class="panel-header"><div><h2>¿Qué necesitas hacer?</h2><p>Atajos para las tareas de hoy.</p></div></div><div class="panel-body"><div class="quick-actions">' +
       quickAction("↗", "Registrar una venta", "Crea un registro para tu cliente", "new-sale") +
       quickAction("⚙", "Iniciar producción", "Registra una nueva orden", "new-production") +
       quickAction("♧", "Anotar consumos del mes", "Agua, energía y residuos", "new-environment") +
       '</div><div class="notice"><span class="notice-icon">✦</span><span><strong>Pequeños cambios, gran impacto.</strong><br>Consulta recomendaciones para reducir consumos y desperdicios.</span></div></div></div></section>' +
-      '<section class="panel list-panel"><div class="panel-header"><div><h2>Actividad reciente</h2><p>Lo último que pasó en tu negocio.</p></div><button class="panel-link" data-page="sales">Ver ventas →</button></div><div class="table-wrap"><table><thead><tr><th>ACTIVIDAD</th><th>CUÁNDO</th></tr></thead><tbody>' + (activity || '<tr><td colspan="2"><div class="empty-state"><strong>Aquí verás los movimientos de tu empresa</strong><p>Cuando registres una venta, compra o producción, aparecerá en esta lista.</p></div></td></tr>') + '</tbody></table></div></section>';
+       renderPendingPanel() + '<section class="panel list-panel"><div class="panel-header"><div><h2>Actividad reciente</h2><p>Lo último que pasó en tu negocio.</p></div><button class="panel-link" data-page="sales">Ver ventas →</button></div><div class="table-wrap"><table><thead><tr><th>ACTIVIDAD</th><th>CUÁNDO</th></tr></thead><tbody>' + (activity || '<tr><td colspan="2"><div class="empty-state"><strong>Aquí verás los movimientos de tu empresa</strong><p>Cuando registres una venta, compra o producción, aparecerá en esta lista.</p></div></td></tr>') + '</tbody></table></div></section>';
+  }
+
+  function renderPendingPanel() {
+    var lowStock = state.inventory.filter(function (item) { return Number(item.min) > 0 && Number(item.stock) <= Number(item.min); }).length;
+    var receiving = state.purchases.filter(function (item) { return item.status === "Por recibir"; }).length;
+    var unpaid = state.sales.filter(function (item) { return saleOutstanding(item) > 0; }).length;
+    var invoiceReview = state.sales.filter(function (item) { return (item.invoiceFollowUpStatus || "Por revisar") === "Por revisar"; }).length;
+    var active = state.production.filter(function (item) { return item.status === "En proceso"; }).length;
+    var environmental = state.company && (!state.environment.some(function (item) { return item.period === currentPeriod; }) || !environmentHasReading(currentEnvironment(), "electricityKwh") || !environmentHasReading(currentEnvironment(), "waterM3"));
+    var items = [];
+    if (lowStock) items.push({ label: lowStock + " productos por reponer", detail: "Revisa las existencias mínimas.", page: "inventory" });
+    if (receiving) items.push({ label: receiving + " compras por recibir", detail: "Confirma cuándo llegan los materiales.", page: "purchases" });
+    if (unpaid) items.push({ label: unpaid + " ventas con saldo pendiente", detail: "Tienes " + money(state.sales.reduce(function (sum, sale) { return sum + saleOutstanding(sale); }, 0)) + " por cobrar.", page: "finance" });
+    if (invoiceReview) items.push({ label: invoiceReview + " ventas por revisar", detail: "Confirma con tu contador si debes registrar un documento externo.", page: "sales" });
+    if (active) items.push({ label: active + " órdenes de producción activas", detail: "Actualiza o termina las órdenes en curso.", page: "production" });
+    if (environmental) items.push({ label: "Faltan consumos ambientales del mes", detail: "Registra energía y agua desde tus recibos.", page: "environment" });
+    var rows = items.length ? items.map(function (item) {
+      return '<button class="pending-item" data-page="' + item.page + '"><span class="pending-item-dot">!</span><span><strong>' + esc(item.label) + '</strong><small>' + esc(item.detail) + '</small></span><span class="pending-item-arrow">›</span></button>';
+    }).join("") : '<p class="pending-clear">No tienes pendientes importantes. ¡Buen trabajo!</p>';
+    return '<section class="panel pending-panel"><div class="panel-header"><div><h2>Pendientes por revisar</h2><p>Pyme360 reúne aquí las tareas que pueden necesitar tu atención.</p></div><span class="status ' + (items.length ? "pending" : "neutral") + '">' + items.length + (items.length === 1 ? " pendiente" : " pendientes") + '</span></div><div class="panel-body pending-list">' + rows + '</div></section>';
   }
 
   function renderSales() {
     var list = state.sales.slice().sort(function (a, b) { return b.date.localeCompare(a.date); });
     var rows = list.map(function (sale) {
-      return '<tr><td><strong>' + esc(sale.number) + '</strong><small>' + dateLabel(sale.date) + '</small></td><td><strong>' + esc(sale.customer) + '</strong><small>' + esc(sale.payment || "Contado") + '</small></td><td>' + sale.lines.reduce(function (sum, line) { return sum + line.quantity; }, 0) + ' und.</td><td><strong>' + money(sale.total) + '</strong></td><td>' + statusBadge(sale.status) + '</td><td><button class="button-quiet" data-action="sale-detail" data-id="' + esc(sale.id) + '">Ver</button></td></tr>';
+      var tracking = sale.invoiceFollowUpStatus || "Por revisar";
+      return '<tr><td><strong>' + esc(sale.number) + '</strong><small>' + dateLabel(sale.date) + '</small></td><td><strong>' + esc(sale.customer) + '</strong><small>' + esc(sale.payment || "Contado") + '</small></td><td>' + (sale.lines || []).reduce(function (sum, line) { return sum + (Number(line.quantity) || 0); }, 0) + ' und.</td><td><strong>' + money(sale.total) + '</strong>' + (saleOutstanding(sale) > 0 ? '<small>Saldo: ' + money(saleOutstanding(sale)) + '</small>' : '') + '</td><td>' + statusBadge(sale.status) + '</td><td>' + statusBadge(tracking, tracking === "Por revisar" ? "pending" : "neutral") + (sale.externalInvoiceNumber ? '<small>' + esc(sale.externalInvoiceNumber) + '</small>' : '') + '</td><td><div class="contact-row-actions"><button class="button-quiet" data-action="sale-detail" data-id="' + esc(sale.id) + '">Ver</button><button class="button-quiet" data-action="sale-edit" data-id="' + esc(sale.id) + '">Editar</button><button class="button-quiet button-quiet-danger" data-action="sale-delete" data-id="' + esc(sale.id) + '">Eliminar</button></div></td></tr>';
     }).join("");
     return heading("TU NEGOCIO", "Ventas", "Registra pedidos, consulta tus facturas y revisa qué te falta por cobrar.", '<button class="button button-primary" data-action="new-sale"><span>＋</span> Registrar venta</button>') +
-      '<div class="toolbar"><div class="toolbar-left"><label class="search-field"><span>⌕</span><input type="search" placeholder="Buscar cliente o factura" data-filter="sales"></label><select class="filter-select" id="sales-status"><option value="Todas">Todos los estados</option><option>Pendiente de pago</option><option>Pagada</option></select></div><span class="muted-note">' + list.length + ' ventas</span></div>' +
-      '<section class="panel list-panel"><div class="table-wrap"><table><thead><tr><th>FACTURA</th><th>CLIENTE</th><th>PRODUCTOS</th><th>TOTAL</th><th>ESTADO</th><th></th></tr></thead><tbody id="sales-rows">' + (rows || '<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">↗</div><strong>Aún no tienes ventas</strong><p>Registra tu primera venta y lleva el control desde aquí.</p><button class="button button-primary" data-action="new-sale">Registrar venta</button></div></td></tr>') + '</tbody></table></div></section>' +
-      '<p class="muted-note section-spacer">Las ventas se guardan localmente en esta demostración. La emisión electrónica DIAN requiere configurar un proveedor tecnológico.</p>';
+      '<div class="toolbar"><div class="toolbar-left"><label class="search-field"><span>⌕</span><input type="search" placeholder="Buscar cliente o factura" data-filter="sales"></label><select class="filter-select" id="sales-status"><option value="Todas">Todos los estados</option><option>Pendiente de pago</option><option>Pago parcial</option><option>Pagada</option></select></div><span class="muted-note">' + list.length + ' ventas</span></div>' +
+      '<section class="panel list-panel"><div class="table-wrap"><table><thead><tr><th>VENTA</th><th>CLIENTE</th><th>PRODUCTOS</th><th>TOTAL</th><th>ESTADO DE PAGO</th><th>SEGUIMIENTO DE FACTURA</th><th></th></tr></thead><tbody id="sales-rows">' + (rows || '<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">↗</div><strong>Aún no tienes ventas</strong><p>Registra tu primera venta y lleva el control desde aquí.</p><button class="button button-primary" data-action="new-sale">Registrar venta</button></div></td></tr>') + '</tbody></table></div></section>' +
+      '<p class="muted-note section-spacer">El seguimiento es manual y no determina obligaciones tributarias. Pyme360 no genera ni transmite facturas a la DIAN.</p>';
   }
 
   function renderPurchases() {
     var rows = state.purchases.slice().sort(function (a, b) { return b.date.localeCompare(a.date); }).map(function (item) {
-      return '<tr><td><strong>' + esc(item.number) + '</strong><small>' + dateLabel(item.date) + '</small></td><td><strong>' + esc(item.supplier) + '</strong><small>' + esc(item.detail) + '</small></td><td><strong>' + money(item.total) + '</strong></td><td>' + statusBadge(item.status) + '</td><td><button class="button-quiet" data-action="purchase-detail" data-id="' + esc(item.id) + '">Ver</button></td></tr>';
+      return '<tr><td><strong>' + esc(item.number) + '</strong><small>' + dateLabel(item.date) + '</small></td><td><strong>' + esc(item.supplier) + '</strong><small>' + esc(item.detail) + '</small></td><td><strong>' + money(item.total) + '</strong></td><td>' + statusBadge(item.status) + '</td><td><div class="contact-row-actions"><button class="button-quiet" data-action="purchase-detail" data-id="' + esc(item.id) + '">Ver</button><button class="button-quiet" data-action="purchase-edit" data-id="' + esc(item.id) + '">Editar</button><button class="button-quiet button-quiet-danger" data-action="purchase-delete" data-id="' + esc(item.id) + '">Eliminar</button></div></td></tr>';
     }).join("");
     return heading("TU NEGOCIO", "Compras", "Recibe materiales, registra facturas de proveedor y controla lo que queda por pagar.", '<button class="button button-primary" data-action="new-purchase"><span>＋</span> Registrar compra</button>') +
       '<div class="metric-grid">' + metricCard("Órdenes registradas", String(state.purchases.length), "Compras en el sistema", "↙", false) + metricCard("Por recibir", String(state.purchases.filter(function (item) { return item.status === "Por recibir"; }).length), "Revisa las entregas pendientes", "▦", true) + metricCard("Proveedores", String(state.contacts.filter(function (item) { return item.role.indexOf("Proveedor") >= 0; }).length), "En tu lista de contactos", "♙", false) + metricCard("Compras recibidas", money(state.purchases.filter(function (item) { return item.status === "Recibida" || item.status === "Pagada"; }).reduce(function (sum, item) { return sum + item.total; }, 0)), "Según registros de compra", "$", false) + '</div>' +
@@ -331,19 +570,20 @@ window.Pyme360App = (function () {
 
   function renderInventory() {
     var rows = state.inventory.map(function (item) {
-      var low = item.stock <= item.min;
-      return '<tr><td><strong>' + esc(item.name) + '</strong><small>' + esc(item.sku) + '</small></td><td>' + esc(item.type) + '</td><td><strong>' + num(item.stock, 1) + ' ' + esc(item.unit) + '</strong></td><td>' + num(item.min, 1) + ' ' + esc(item.unit) + '</td><td>' + money(item.cost) + '</td><td>' + (low ? '<span class="status pending">Stock bajo</span>' : '<span class="status">Disponible</span>') + '</td></tr>';
+      var low = Number(item.min) > 0 && Number(item.stock) <= Number(item.min);
+      return '<tr><td><strong>' + esc(item.name) + '</strong><small>' + esc(item.sku) + '</small></td><td>' + esc(item.type) + '</td><td><strong>' + num(item.stock, 1) + ' ' + esc(item.unit) + '</strong></td><td>' + num(item.min, 1) + ' ' + esc(item.unit) + '</td><td>' + money(item.cost) + '</td><td>' + (low ? '<span class="status pending">Stock bajo</span>' : '<span class="status">Disponible</span>') + '</td><td><div class="contact-row-actions"><button class="button-quiet" data-action="product-edit" data-id="' + esc(item.id) + '">Editar</button><button class="button-quiet button-quiet-danger" data-action="product-delete" data-id="' + esc(item.id) + '">Eliminar</button></div></td></tr>';
     }).join("");
     var value = state.inventory.reduce(function (sum, item) { return sum + item.stock * item.cost; }, 0);
     return heading("TU NEGOCIO", "Inventario", "Mira qué tienes disponible y qué necesitas volver a pedir.", '<button class="button button-secondary" data-action="inventory-export">↓ Exportar</button>' + (state.inventory.length ? '<button class="button button-secondary" data-action="new-adjustment">Ajustar stock</button>' : '') + '<button class="button button-primary" data-action="new-product"><span>＋</span> Agregar producto</button>') +
-      '<div class="metric-grid">' + metricCard("Referencias", String(state.inventory.length), "Productos, materias primas e insumos", "▦", false) + metricCard("Valor aproximado", money(value), "Según el costo registrado", "$", false) + metricCard("Por reponer", String(state.inventory.filter(function (item) { return item.stock <= item.min; }).length), "Referencias bajo el mínimo", "!", true) + metricCard("Bodegas", "Por configurar", "Se define al iniciar la empresa", "⌂", false) + '</div>' +
+      '<div class="metric-grid">' + metricCard("Referencias", String(state.inventory.length), "Productos, materias primas e insumos", "▦", false) + metricCard("Valor aproximado", money(value), "Según el costo registrado", "$", false) + metricCard("Por reponer", String(state.inventory.filter(function (item) { return Number(item.min) > 0 && Number(item.stock) <= Number(item.min); }).length), "Referencias bajo el mínimo", "!", true) + metricCard("Bodegas", "Por configurar", "Se define al iniciar la empresa", "⌂", false) + '</div>' +
       '<div class="toolbar"><div class="toolbar-left"><label class="search-field"><span>⌕</span><input type="search" placeholder="Buscar producto o código" data-filter="inventory"></label><select class="filter-select" id="inventory-type"><option value="Todos">Todos los tipos</option><option>Producto terminado</option><option>Materia prima</option><option>Insumo</option></select></div></div>' +
-      '<section class="panel list-panel"><div class="table-wrap"><table><thead><tr><th>PRODUCTO</th><th>TIPO</th><th>EXISTENCIA</th><th>MÍNIMO</th><th>COSTO UNITARIO</th><th>ESTADO</th></tr></thead><tbody id="inventory-rows">' + (rows || '<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">▦</div><strong>Tu inventario está vacío</strong><p>Agrega materias primas e insumos primero. Después podrás crear productos terminados y registrar producción.</p><button class="button button-primary" data-action="new-product">Agregar primer producto</button></div></td></tr>') + '</tbody></table></div></section>';
+      '<section class="panel list-panel"><div class="table-wrap"><table><thead><tr><th>PRODUCTO</th><th>TIPO</th><th>EXISTENCIA</th><th>MÍNIMO</th><th>COSTO UNITARIO</th><th>ESTADO</th><th></th></tr></thead><tbody id="inventory-rows">' + (rows || '<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">▦</div><strong>Tu inventario está vacío</strong><p>Agrega materias primas e insumos primero. Después podrás crear productos terminados y registrar producción.</p><button class="button button-primary" data-action="new-product">Agregar primer producto</button></div></td></tr>') + '</tbody></table></div></section>';
   }
 
   function renderProduction() {
     var rows = state.production.slice().sort(function (a, b) { return b.date.localeCompare(a.date); }).map(function (order) {
-      return '<tr><td><strong>' + esc(order.number) + '</strong><small>' + dateLabel(order.date) + '</small></td><td><strong>' + esc(order.product) + '</strong></td><td>' + num(order.quantity) + ' und.</td><td>' + (order.wasteKg ? num(order.wasteKg, 1) + ' kg' : "—") + '</td><td>' + statusBadge(order.status) + '</td><td><button class="button-quiet" data-action="production-detail" data-id="' + esc(order.id) + '">Ver</button>' + (order.status === "En proceso" ? ' <button class="button-quiet" data-action="production-complete" data-id="' + esc(order.id) + '">Terminar</button>' : "") + '</td></tr>';
+      var activeActions = order.status !== "En proceso" ? "" : order.inventoryApplied === false ? ' <button class="button-quiet button-quiet-danger" data-action="production-delete" data-id="' + esc(order.id) + '">Quitar</button>' : ' <button class="button-quiet" data-action="production-edit" data-id="' + esc(order.id) + '">Editar</button> <button class="button-quiet" data-action="production-complete" data-id="' + esc(order.id) + '">Terminar</button><button class="button-quiet button-quiet-danger" data-action="production-delete" data-id="' + esc(order.id) + '">Cancelar</button>';
+      return '<tr><td><strong>' + esc(order.number) + '</strong><small>' + dateLabel(order.date) + '</small></td><td><strong>' + esc(order.product) + '</strong></td><td>' + num(order.quantity) + ' und.</td><td>' + (order.wasteKg ? num(order.wasteKg, 1) + ' kg' : "—") + '</td><td>' + statusBadge(order.status) + '</td><td><div class="contact-row-actions"><button class="button-quiet" data-action="production-detail" data-id="' + esc(order.id) + '">Ver</button>' + activeActions + '</div></td></tr>';
     }).join("");
     var active = state.production.filter(function (item) { return item.status === "En proceso"; }).length;
     return heading("TU NEGOCIO", "Producción", "Organiza lo que vas a fabricar y registra lo que realmente usaste.", '<button class="button button-primary" data-action="new-production"><span>＋</span> Nueva orden</button>') +
@@ -362,7 +602,7 @@ window.Pyme360App = (function () {
     var periods = state.environment.slice().sort(function (a, b) { return b.period.localeCompare(a.period); });
     if (!periods.some(function (item) { return item.period === currentPeriod; })) periods.unshift({ period: currentPeriod });
     var options = periods.map(function (item) { return '<option value="' + esc(item.period) + '"' + (item.period === currentPeriod ? " selected" : "") + '>' + monthName(item.period) + " " + item.period.slice(0, 4) + '</option>'; }).join("");
-    return heading("PRODUCE MEJOR, PASO A PASO", "Impacto ambiental", "Entiende tus consumos y encuentra oportunidades para producir mejor.", '<select class="filter-select" id="environment-period">' + options + '</select><button class="button button-primary" data-action="new-environment"><span>＋</span> Registrar datos</button>') +
+    return heading("PRODUCE MEJOR, PASO A PASO", "Impacto ambiental", "Entiende tus consumos y encuentra oportunidades para producir mejor.", '<select class="filter-select" id="environment-period">' + options + '</select><button class="button button-primary" data-action="' + (periodRecorded ? "environment-edit" : "new-environment") + '"><span>' + (periodRecorded ? "✎" : "＋") + '</span> ' + (periodRecorded ? "Actualizar datos" : "Registrar datos") + '</button>') +
       '<div class="env-highlight"><div class="env-leaf">♧</div><div class="env-highlight-main"><div class="eyebrow">RESUMEN DE ' + monthName(currentPeriod).toUpperCase() + '</div><h2>' + (periodRecorded ? "Cada dato cuenta. Revisa tu avance." : "Aún no hay datos ambientales del mes.") + '</h2><p>' + (periodRecorded ? "Compara tus consumos con tu propia producción y mejora período a período." : "Sube la factura de energía o agua, o prueba con un recibo de ejemplo.") + '</p></div><button class="button" data-action="environment-export">↓ Descargar resumen</button></div>' +
       '<div class="env-grid">' + envMetric("Energía", num(record.electricityKwh) + " kWh", "Consumo de la sede", "ϟ") + envMetric("Agua", num(record.waterM3, 1) + " m³", "Agua consumida", "◌") + envMetric("Emisiones estimadas", num(emissions / 1000, 2) + " tCO₂e", "Cálculo demostrativo", "♧") + envMetric("Residuos aprovechados", rate + "%", num(record.recycledKg, 1) + " kg reutilizados o reciclados", "↻") + '</div>' +
       publicBenchmarkPanel() +
@@ -572,38 +812,121 @@ window.Pyme360App = (function () {
 
   /* Finanzas, contactos y datos */
   function renderFinance() {
-    var due = state.sales.filter(function (sale) { return sale.status === "Pendiente de pago"; }).reduce(function (sum, sale) { return sum + sale.total; }, 0);
+    var due = state.sales.reduce(function (sum, sale) { return sum + saleOutstanding(sale); }, 0);
     var payable = state.purchases.filter(function (purchase) { return purchase.status === "Por recibir"; }).reduce(function (sum, purchase) { return sum + purchase.total; }, 0);
     var income = state.sales.filter(function (sale) { return sale.date.slice(0, 7) === currentPeriod; }).reduce(function (sum, sale) { return sum + sale.total; }, 0);
     var rows = state.sales.slice(0, 8).map(function (sale) {
-      return '<tr><td><strong>' + esc(sale.number) + '</strong><small>' + dateLabel(sale.date) + '</small></td><td>' + esc(sale.customer) + '</td><td><strong>' + money(sale.total) + '</strong></td><td>' + statusBadge(sale.status) + '</td></tr>';
+      return '<tr><td><strong>' + esc(sale.number) + '</strong><small>' + dateLabel(sale.date) + '</small></td><td>' + esc(sale.customer) + '</td><td><strong>' + money(sale.total) + '</strong><small>Saldo: ' + money(saleOutstanding(sale)) + '</small></td><td>' + statusBadge(sale.status) + '</td></tr>';
     }).join("");
     return heading("TU NEGOCIO", "Finanzas", "Consulta lo que has vendido, lo que falta por cobrar y tus compromisos de compra.", '<button class="button button-secondary" data-action="finance-export">↓ Exportar movimientos</button><button class="button button-primary" data-action="new-payment"><span>＋</span> Registrar pago</button>') +
       '<div class="finance-cards"><div class="finance-card"><span>Ingresos registrados este mes</span><strong>' + money(income) + '</strong><small>Basado en ventas registradas</small></div><div class="finance-card"><span>Por cobrar a clientes</span><strong>' + money(due) + '</strong><small>Facturas pendientes de pago</small></div><div class="finance-card"><span>Compromisos de compra</span><strong>' + money(payable) + '</strong><small>Órdenes pendientes de recibir</small></div></div>' +
-      '<section class="panel list-panel"><div class="panel-header"><div><h2>Movimientos recientes</h2><p>Resumen de ventas registradas. El contador puede revisar el detalle contable.</p></div><span class="status neutral">Resumen administrativo</span></div><div class="table-wrap"><table><thead><tr><th>DOCUMENTO</th><th>CONTACTO</th><th>VALOR</th><th>ESTADO</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4"><div class="empty-state"><strong>Aún no hay movimientos</strong><p>Cuando registres ventas, aparecerán aquí para facilitar la revisión.</p><button class="button button-primary" data-action="new-sale">Registrar primera venta</button></div></td></tr>') + '</tbody></table></div></section>' +
+      '<section class="panel list-panel"><div class="panel-header"><div><h2>Movimientos recientes</h2><p>Resumen de ventas registradas. El contador puede revisar el detalle contable.</p></div><span class="status neutral">Resumen administrativo</span></div><div class="table-wrap"><table><thead><tr><th>DOCUMENTO</th><th>CONTACTO</th><th>VALOR / SALDO</th><th>ESTADO</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4"><div class="empty-state"><strong>Aún no hay movimientos</strong><p>Cuando registres ventas, aparecerán aquí para facilitar la revisión.</p><button class="button button-primary" data-action="new-sale">Registrar primera venta</button></div></td></tr>') + '</tbody></table></div></section>' +
       '<div class="notice section-spacer"><span class="notice-icon">i</span><span>Este resumen sirve para el control del negocio. No reemplaza los libros ni las declaraciones preparados o revisados por tu contador.</span></div>';
   }
 
   function renderContacts() {
     var rows = state.contacts.map(function (item) {
-      var initials = item.name.split(/\s+/).slice(0, 2).map(function (part) { return part.charAt(0); }).join("").toUpperCase();
-      return '<tr><td><div class="contact-cell"><span class="contact-avatar">' + esc(initials) + '</span><span><strong>' + esc(item.name) + '</strong><small>' + esc(item.idNumber || "Identificación pendiente") + '</small></span></div></td><td>' + statusBadge(item.role, "neutral") + '</td><td>' + esc(item.email || "—") + '</td><td>' + esc(item.phone || "—") + '</td><td><button class="button-quiet" data-action="contact-detail" data-id="' + esc(item.id) + '">Ver</button></td></tr>';
+      var displayName = item.name || (item.ordinaryCustomer ? "Cliente de mostrador" : "Contacto sin nombre");
+      var initials = displayName.split(/\s+/).slice(0, 2).map(function (part) { return part.charAt(0); }).join("").toUpperCase();
+      var isCustomer = item.role.indexOf("Cliente") >= 0;
+      var isSupplier = item.role.indexOf("Proveedor") >= 0;
+      var roleBadges = (isCustomer ? statusBadge(item.ordinaryCustomer ? "Cliente ordinario" : "Cliente", "neutral") : "") + (isSupplier ? statusBadge("Proveedor", "neutral") : "");
+      return '<tr><td><div class="contact-cell"><span class="contact-avatar">' + esc(initials) + '</span><span><strong>' + esc(displayName) + '</strong><small>' + esc(item.idNumber || "Identificación pendiente") + '</small></span></div></td><td><div class="contact-role-badges">' + roleBadges + '</div></td><td>' + esc(item.email || "—") + '</td><td>' + esc(item.phone || "—") + '</td><td><div class="contact-row-actions"><button class="button-quiet" data-action="contact-detail" data-id="' + esc(item.id) + '">Ver</button><button class="button-quiet" data-action="contact-edit" data-id="' + esc(item.id) + '">Editar</button><button class="button-quiet button-quiet-danger" data-action="contact-delete" data-id="' + esc(item.id) + '">Eliminar</button></div></td></tr>';
     }).join("");
     return heading("TU NEGOCIO", "Contactos", "Ten a mano los datos de tus clientes y proveedores.", '<button class="button button-primary" data-action="new-contact"><span>＋</span> Nuevo contacto</button>') +
       '<div class="toolbar"><div class="toolbar-left"><label class="search-field"><span>⌕</span><input type="search" placeholder="Buscar por nombre o identificación" data-filter="contacts"></label><select class="filter-select" id="contact-role"><option value="Todos">Todos los contactos</option><option>Cliente</option><option>Proveedor</option></select></div><span class="muted-note">' + state.contacts.length + ' contactos</span></div>' +
-      '<section class="panel list-panel"><div class="table-wrap"><table><thead><tr><th>CONTACTO</th><th>TIPO</th><th>CORREO</th><th>TELÉFONO</th><th></th></tr></thead><tbody id="contact-rows">' + (rows || '<tr><td colspan="5"><div class="empty-state"><div class="empty-icon">♙</div><strong>Aún no tienes contactos</strong><p>Agrega tus propios clientes y proveedores. Esta lista es exclusiva de los datos guardados en este navegador.</p><button class="button button-primary" data-action="new-contact">Agregar primer contacto</button></div></td></tr>') + '</tbody></table></div></section>';
+      '<section class="panel list-panel"><div class="table-wrap"><table><thead><tr><th>CONTACTO</th><th>TIPO</th><th>CORREO</th><th>TELÉFONO</th><th></th></tr></thead><tbody id="contact-rows">' + (rows || '<tr><td colspan="5"><div class="empty-state"><div class="empty-icon">♙</div><strong>Aún no tienes contactos</strong><p>Agrega tus propios clientes y proveedores. Los datos se guardan en este computador.</p><button class="button button-primary" data-action="new-contact">Agregar primer contacto</button></div></td></tr>') + '</tbody></table></div></section>';
   }
 
   function renderData() {
     var total = state.contacts.length + state.inventory.length + state.sales.length + state.purchases.length + state.production.length + state.environment.length;
+    var writeDisabled = readOnlyMode ? " disabled" : "";
+    var storageNotice = readOnlyMode ? (window.location.protocol === "file:" ? "Modo de solo lectura: esta pestaña no puede guardar en SQLite. Si aquí ves datos anteriores, descarga el respaldo y restáuralo después de abrir Pyme360 con el lanzador." : "No hay conexión con SQLite. Puedes descargar los datos visibles, pero podrían no incluir los últimos cambios confirmados en la base local.") : "Los archivos se leen y descargan desde el navegador. Tus registros se guardan en SQLite en este computador; no se sincronizan con otros equipos.";
     var body = '<div class="excel-actions-grid">' +
       '<section class="panel excel-action-card"><div class="excel-action-icon">↓</div><h2>Descargar Excel maestro</h2><p>Un solo archivo con los datos de tu empresa, separados por hojas. Se descarga cuando tú lo pides.</p><button class="button button-primary" data-action="excel-download-master">Descargar Excel maestro</button></section>' +
       '<section class="panel excel-action-card"><div class="excel-action-icon">▤</div><h2>Descargar plantilla vacía</h2><p>Usa los mismos encabezados del Excel maestro para organizar información nueva.</p><button class="button button-secondary" data-action="excel-download-template">Descargar plantilla vacía</button></section>' +
-      '<section class="panel excel-action-card"><div class="excel-action-icon">↑</div><h2>Importar Excel de la empresa</h2><p>Selecciona un archivo, relaciona sus columnas y revisa los cambios antes de guardarlos.</p><button class="button button-secondary" data-action="excel-select-file">Elegir archivo Excel</button><input class="visually-hidden" type="file" id="excel-import-file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"></section>' +
-      '</div><div class="notice section-spacer"><span class="notice-icon">i</span><span>Los archivos se leen y descargan en este navegador. No se envían a un servidor. Tus registros actuales permanecen en el dispositivo.</span></div>' +
-      '<section class="panel section-spacer"><div class="panel-header"><div><h2>Qué incluye el Excel</h2><p>' + total + ' registros principales guardados en esta demostración.</p></div></div><div class="panel-body"><div class="excel-sheet-list"><span>Empresa</span><span>Contactos</span><span>Productos</span><span>Recetas</span><span>Ventas y detalle</span><span>Compras</span><span>Producción y consumos</span><span>Impacto ambiental</span><span>Datos adicionales</span></div><p class="form-note">La plantilla incluye los encabezados aunque todavía no tengas registros. Los resúmenes y la actividad reciente se calculan dentro de la aplicación y no se exportan como datos fuente.</p></div></section>';
+      '<section class="panel excel-action-card"><div class="excel-action-icon">↑</div><h2>Importar Excel de la empresa</h2><p>Selecciona un archivo, relaciona sus columnas y revisa los cambios antes de guardarlos.</p><button class="button button-secondary" data-action="excel-select-file"' + writeDisabled + '>Elegir archivo Excel</button><input class="visually-hidden" type="file" id="excel-import-file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"></section>' +
+      '<section class="panel excel-action-card"><div class="excel-action-icon">⌂</div><h2>Respaldo y recuperación</h2><p>Descarga una copia de tus registros. Restaurar reemplaza los datos actuales de Pyme360 en este computador.</p><div class="backup-actions"><button class="button button-secondary" data-action="backup-download">Descargar respaldo</button><button class="button button-quiet" data-action="backup-select-file"' + writeDisabled + '>Restaurar respaldo</button></div><input class="visually-hidden" type="file" id="backup-restore-file" accept=".json,application/json"></section>' +
+      '</div><div class="notice section-spacer"><span class="notice-icon">i</span><span>' + esc(storageNotice) + '</span></div>' +
+      '<section class="panel section-spacer"><div class="panel-header"><div><h2>Qué incluye el Excel</h2><p>' + total + ' registros principales guardados en esta demostración.</p></div></div><div class="panel-body"><div class="excel-sheet-list"><span>Empresa</span><span>Contactos</span><span>Productos</span><span>Recetas</span><span>Ventas</span><span>Detalle de ventas</span><span>Pagos recibidos</span><span>Compras</span><span>Detalle de compras</span><span>Producción y consumos</span><span>Impacto ambiental</span><span>Datos adicionales</span></div><p class="form-note">La plantilla incluye los encabezados aunque todavía no tengas registros. Los resúmenes y la actividad reciente se calculan dentro de la aplicación y no se exportan como datos fuente.</p></div></section>';
     if (importSession) body += renderImportWizard();
     return heading("TUS DATOS", "Datos y Excel", "Descarga una copia de trabajo o trae los datos que ya tienes en una hoja de cálculo.", "") + body;
+  }
+
+  function downloadBackup() {
+    var backup = { product: "Pyme360", formatVersion: 1, createdAt: new Date().toISOString(), state: state };
+    var blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "pyme360-respaldo-" + today() + ".json";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    toast("Respaldo descargado", "Guárdalo en un lugar seguro. Incluye los datos locales de esta empresa.");
+  }
+
+  function normalizeBackupState(rawState) {
+    if (!rawState || typeof rawState !== "object" || Array.isArray(rawState)) throw new Error("El respaldo no contiene los datos de una empresa.");
+    var next = Object.assign(seedState(), rawState);
+    ["contacts", "inventory", "sales", "purchases", "production", "environment", "activity", "importExtras"].forEach(function (key) {
+      if (!Array.isArray(next[key])) throw new Error("El respaldo tiene una sección incompleta: " + key + ".");
+      if (next[key].some(function (item) { return !item || typeof item !== "object" || Array.isArray(item); })) throw new Error("El respaldo contiene filas inválidas en " + key + ".");
+    });
+    ["company", "companyNit", "city", "activityType"].forEach(function (key) { if (typeof next[key] !== "string") next[key] = String(next[key] || ""); });
+    if (!next.environmentTargets || typeof next.environmentTargets !== "object") next.environmentTargets = { energyReductionPct: null, waterReductionPct: null };
+    ["energyReductionPct", "waterReductionPct"].forEach(function (key) {
+      var percentage = Number(next.environmentTargets[key]);
+      next.environmentTargets[key] = next.environmentTargets[key] != null && Number.isInteger(percentage) && percentage >= 1 && percentage <= 99 ? percentage : null;
+    });
+    next.contacts.forEach(function (contact) { if (typeof contact.ordinaryCustomer !== "boolean") contact.ordinaryCustomer = false; });
+    next.sales.forEach(function (sale) {
+      if (!Array.isArray(sale.lines)) sale.lines = [];
+      if (!Array.isArray(sale.payments)) sale.payments = [];
+      if (!sale.payments.length && sale.status === "Pagada") sale.payments.push({ id: "legacy-" + (sale.id || sale.number), date: sale.paidDate || sale.date || today(), amount: Number(sale.total) || 0, method: sale.method || sale.payment || "Pago registrado", legacy: true });
+      if (typeof sale.inventoryApplied !== "boolean") sale.inventoryApplied = String(sale.id || "").indexOf("imp-") !== 0;
+    });
+    next.purchases.forEach(function (purchase) {
+      if (!Array.isArray(purchase.lines)) purchase.lines = [];
+      if (typeof purchase.inventoryApplied !== "boolean") purchase.inventoryApplied = String(purchase.id || "").indexOf("imp-") !== 0 && purchase.status !== "Por recibir";
+    });
+    next.production.forEach(function (order) { if (typeof order.inventoryApplied !== "boolean") order.inventoryApplied = String(order.id || "").indexOf("imp-") !== 0; });
+    next.environment.forEach(function (record) {
+      if (!record.readingSources) record.readingSources = {};
+      if (!record.readingSources.energy && record.energySource) record.readingSources.energy = { label: record.energySource, method: record.energyMethod || "manual", confirmedAt: record.energyCapturedAt || "" };
+      if (!record.readingSources.water && record.waterSource) record.readingSources.water = { label: record.waterSource, method: record.waterMethod || "manual", confirmedAt: record.waterCapturedAt || "" };
+    });
+    return next;
+  }
+
+  function startBackupRestore(file) {
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) return toast("El respaldo es demasiado grande", "El límite de esta demostración es 20 MB.");
+    var reader = new FileReader();
+    reader.onerror = function () { toast("No se pudo leer el respaldo", "El archivo no se modificó. Intenta seleccionarlo de nuevo."); };
+    reader.onload = function (event) {
+      try {
+        var envelope = JSON.parse(event.target.result);
+        if (!envelope || envelope.product !== "Pyme360" || envelope.formatVersion !== 1) throw new Error("El archivo no es un respaldo compatible de Pyme360.");
+        backupSession = normalizeBackupState(envelope.state);
+        var count = backupSession.contacts.length + backupSession.inventory.length + backupSession.sales.length + backupSession.purchases.length + backupSession.production.length + backupSession.environment.length;
+        openModal("Revisar respaldo", "Confirma qué información quieres recuperar.", '<div class="modal-form"><p>El respaldo de <strong>' + esc(backupSession.company || "tu empresa") + '</strong> contiene <strong>' + count + ' registros principales</strong> y fue creado el ' + esc(envelope.createdAt ? new Date(envelope.createdAt).toLocaleString("es-CO") : "fecha desconocida") + '.</p><p class="form-note">Al confirmar, los datos actuales de Pyme360 en este computador serán reemplazados por los del respaldo. Si quieres conservarlos, descarga primero otro respaldo.</p><div class="modal-footer"><button class="button button-secondary" data-action="backup-cancel-restore">Cancelar</button><button class="button button-primary" data-action="backup-confirm-restore">Restaurar datos</button></div></div>');
+      } catch (error) {
+        backupSession = null;
+        toast("No pudimos abrir el respaldo", error.message || "Revisa que sea un JSON de Pyme360.");
+      }
+    };
+    reader.readAsText(file, "UTF-8");
+  }
+
+  function confirmBackupRestore() {
+    if (!backupSession) return toast("No hay un respaldo listo para restaurar");
+    state = backupSession;
+    saveState().then(function (saved) { if (saved) backupSession = null; });
+    closeModal();
+    render();
+    toast("Respaldo restaurado", "Los datos de esta empresa quedaron guardados en SQLite en este computador.");
   }
 
   /* Importación Excel: interfaz de revisión */
@@ -658,6 +981,8 @@ window.Pyme360App = (function () {
     sales: "Ventas",
     saleLines: "Detalle de ventas",
     purchases: "Compras",
+    purchaseLines: "Detalle de compras",
+    salePayments: "Pagos recibidos",
     production: "Producción",
     productionInputs: "Consumos de producción",
     environment: "Impacto ambiental",
@@ -673,7 +998,8 @@ window.Pyme360App = (function () {
     ],
     contacts: [
       fieldDef("id", "ID", false, ["id", "identificador"]), fieldDef("name", "Nombre", true, ["nombre", "razon social", "contacto", "cliente", "proveedor"]),
-      fieldDef("role", "Tipo", true, ["tipo", "rol", "tipo de contacto", "clase"]), fieldDef("idNumber", "Identificación", false, ["nit", "cedula", "identificacion", "numero de documento"]),
+      fieldDef("role", "Tipo", true, ["tipo", "rol", "tipo de contacto", "clase"]), fieldDef("ordinaryCustomer", "Cliente ordinario", false, ["cliente ordinario", "es cliente ordinario", "clasificacion cliente", "clasificacion comercial"]),
+      fieldDef("idNumber", "Identificación", false, ["nit", "cedula", "identificacion", "numero de documento"]),
       fieldDef("email", "Correo", false, ["correo", "email", "correo electronico"]), fieldDef("phone", "Teléfono", false, ["telefono", "celular", "telefono de contacto"])
     ],
     products: [
@@ -687,17 +1013,22 @@ window.Pyme360App = (function () {
     sales: [
       fieldDef("id", "ID", false, ["id", "identificador"]), fieldDef("number", "Número", true, ["numero", "numero de factura", "factura", "documento", "consecutivo"]),
       fieldDef("customer", "Cliente", true, ["cliente", "comprador", "razon social cliente"]), fieldDef("date", "Fecha", true, ["fecha", "fecha de venta", "fecha factura"]),
-      fieldDef("total", "Total COP", true, ["total", "valor total", "total cop", "valor"]), fieldDef("taxRate", "IVA %", false, ["iva", "iva porcentaje", "tarifa iva"]),
+      fieldDef("total", "Total COP", true, ["total", "valor total", "total cop", "valor"]), fieldDef("discount", "Descuento COP", false, ["descuento", "descuento cop"]), fieldDef("taxRate", "IVA %", false, ["iva", "iva porcentaje", "tarifa iva"]),
       fieldDef("status", "Estado", false, ["estado", "estado de pago"]), fieldDef("payment", "Forma de pago", false, ["forma de pago", "condicion de pago", "pago"]),
-      fieldDef("paidDate", "Fecha de pago", false, ["fecha de pago", "fecha pago"]), fieldDef("method", "Medio de pago", false, ["medio de pago", "metodo de pago"])
+      fieldDef("paidDate", "Fecha de pago", false, ["fecha de pago", "fecha pago"]), fieldDef("method", "Medio de pago", false, ["medio de pago", "metodo de pago"]),
+      fieldDef("invoiceFollowUpStatus", "Seguimiento de factura", false, ["seguimiento de factura", "estado factura externa", "estado diAN", "seguimiento dian"]),
+      fieldDef("externalInvoiceNumber", "Número del documento externo", false, ["numero del documento externo", "numero documento externo", "documento externo"]),
+      fieldDef("externalInvoiceDate", "Fecha del documento externo", false, ["fecha del documento externo", "fecha documento externo"])
     ],
-    saleLines: [fieldDef("saleNumber", "Número de venta", true, ["numero de venta", "venta", "factura", "numero factura"]), fieldDef("sku", "Producto SKU", true, ["producto sku", "sku", "codigo", "referencia"]), fieldDef("quantity", "Cantidad", true, ["cantidad", "unidades"])],
+    saleLines: [fieldDef("saleNumber", "Número de venta", true, ["numero de venta", "venta", "factura", "numero factura"]), fieldDef("sku", "Producto SKU", true, ["producto sku", "sku", "codigo", "referencia"]), fieldDef("quantity", "Cantidad", true, ["cantidad", "unidades"]), fieldDef("unitPrice", "Precio unitario COP", false, ["precio unitario", "precio unitario cop"]), fieldDef("taxRate", "IVA %", false, ["iva %", "tarifa iva", "porcentaje iva"])],
     purchases: [
       fieldDef("id", "ID", false, ["id", "identificador"]), fieldDef("number", "Número", true, ["numero", "orden", "orden de compra", "factura proveedor", "documento"]),
       fieldDef("supplier", "Proveedor", true, ["proveedor", "vendedor", "razon social proveedor"]), fieldDef("date", "Fecha", true, ["fecha", "fecha de compra", "fecha factura"]),
       fieldDef("total", "Total COP", true, ["total", "valor total", "total cop", "valor"]), fieldDef("status", "Estado", false, ["estado", "estado de compra"]),
       fieldDef("detail", "Detalle", false, ["detalle", "descripcion", "producto"]), fieldDef("productSku", "Producto SKU", false, ["producto sku", "sku", "codigo"]), fieldDef("quantity", "Cantidad", false, ["cantidad", "unidades"])
     ],
+    purchaseLines: [fieldDef("purchaseNumber", "Número de compra", true, ["numero de compra", "compra", "numero de orden", "orden", "factura proveedor"]), fieldDef("sku", "Producto SKU", true, ["producto sku", "sku", "codigo", "referencia"]), fieldDef("quantity", "Cantidad", true, ["cantidad", "unidades"]), fieldDef("total", "Costo total COP", true, ["costo total", "costo total cop", "valor de linea", "total cop"])],
+    salePayments: [fieldDef("paymentId", "ID de pago", false, ["id de pago", "payment id"]), fieldDef("saleNumber", "Número de venta", true, ["numero de venta", "venta", "factura", "numero factura"]), fieldDef("date", "Fecha", true, ["fecha", "fecha de pago"]), fieldDef("amount", "Valor recibido COP", true, ["valor recibido", "valor recibido cop", "abono", "monto", "valor"]), fieldDef("method", "Medio de pago", false, ["medio de pago", "metodo", "metodo de pago"])],
     production: [
       fieldDef("id", "ID", false, ["id", "identificador"]), fieldDef("number", "Número de orden", true, ["numero de orden", "orden", "orden de produccion", "consecutivo"]),
       fieldDef("productSku", "Producto SKU", false, ["producto sku", "sku", "codigo de producto"]), fieldDef("product", "Producto", false, ["producto", "producto terminado", "nombre del producto"]),
@@ -729,7 +1060,7 @@ window.Pyme360App = (function () {
   }
   function guessImportEntity(name) {
     var value = normalizedText(name);
-    var aliases = { company: ["empresa", "compania"], contacts: ["contactos", "contacto", "clientes", "proveedores"], products: ["productos", "inventario", "items", "articulos"], recipes: ["recetas", "formula", "materiales por producto"], sales: ["ventas", "facturas", "facturas de venta"], saleLines: ["detalle de ventas", "detalle ventas", "lineas de venta"], purchases: ["compras", "ordenes de compra"], production: ["produccion", "ordenes de produccion"], productionInputs: ["consumos de produccion", "consumo produccion"], environment: ["impacto ambiental", "ambiental", "medio ambiente"], extras: ["datos adicionales"] };
+    var aliases = { company: ["empresa", "compania"], contacts: ["contactos", "contacto", "clientes", "proveedores"], products: ["productos", "inventario", "items", "articulos"], recipes: ["recetas", "formula", "materiales por producto"], sales: ["ventas", "facturas", "facturas de venta"], saleLines: ["detalle de ventas", "detalle ventas", "lineas de venta"], purchases: ["compras", "ordenes de compra"], purchaseLines: ["detalle de compras", "detalle compras", "lineas de compra"], salePayments: ["pagos recibidos", "pagos de ventas", "abonos"], production: ["produccion", "ordenes de produccion"], productionInputs: ["consumos de produccion", "consumo produccion"], environment: ["impacto ambiental", "ambiental", "medio ambiente"], extras: ["datos adicionales"] };
     return Object.keys(aliases).find(function (key) { return aliases[key].some(function (alias) { return value === normalizedText(alias); }); }) || "ignore";
   }
   function mapImportHeader(header, entity) {
@@ -808,12 +1139,12 @@ window.Pyme360App = (function () {
     fields.forEach(function (field) {
       var column = config.mapping[field.key];
       var value = column == null ? "" : row[column];
-      if (["date", "paidDate", "completedDate"].indexOf(field.key) >= 0) value = importDate(value);
+      if (["date", "paidDate", "completedDate", "externalInvoiceDate"].indexOf(field.key) >= 0) value = importDate(value);
       else if (field.key === "period" && typeof value === "number" && window.XLSX && window.XLSX.SSF) {
         var periodDate = window.XLSX.SSF.parse_date_code(value);
         value = periodDate ? String(periodDate.y).padStart(4, "0") + "-" + String(periodDate.m).padStart(2, "0") : "";
       }
-      else if (["stock", "min", "cost", "price", "taxRate", "total", "quantity", "amount", "wasteKg", "electricityKwh", "waterM3", "fuelL", "organicKg", "recyclableKg", "nonRecyclableKg", "hazardousKg", "recycledKg", "productionUnits"].indexOf(field.key) >= 0) value = importNumber(value);
+      else if (["stock", "min", "cost", "price", "discount", "taxRate", "unitPrice", "amount", "total", "quantity", "wasteKg", "electricityKwh", "waterM3", "fuelL", "organicKg", "recyclableKg", "nonRecyclableKg", "hazardousKg", "recycledKg", "productionUnits"].indexOf(field.key) >= 0) value = importNumber(value);
       else if (config.entity === "extras" && field.key === "value") value = value == null ? "" : value;
       else value = String(value == null ? "" : value).trim();
       data[field.key] = value;
@@ -831,6 +1162,8 @@ window.Pyme360App = (function () {
     if (entity === "environment") return normalizedText(data.period);
     if (entity === "recipes") return normalizedText(data.productSku + "|" + data.materialSku);
     if (entity === "saleLines") return normalizedText(data.saleNumber + "|" + data.sku);
+    if (entity === "purchaseLines") return normalizedText(data.purchaseNumber + "|" + data.sku);
+    if (entity === "salePayments") return normalizedText(data.paymentId || (data.saleNumber + "|" + data.date + "|" + data.amount + "|" + data.method));
     if (entity === "productionInputs") return normalizedText(data.productionNumber + "|" + data.sku);
     return "";
   }
@@ -868,7 +1201,7 @@ window.Pyme360App = (function () {
   function lookupDocument(entity, reference, candidates) {
     var key = normalizedText(reference);
     if (!key) return null;
-    var collection = entity === "sales" ? state.sales : state.production;
+    var collection = entity === "sales" ? state.sales : entity === "purchases" ? state.purchases : state.production;
     var existing = collection.find(function (item) { return normalizedText(item.number) === key; });
     if (existing) return existing;
     var incoming = candidates.find(function (item) { return item.entity === entity && !item.invalid && normalizedText(item.data.number) === key; });
@@ -917,7 +1250,7 @@ window.Pyme360App = (function () {
           else extras.push(extra);
           continue;
         }
-        if (["recipes", "saleLines", "productionInputs"].indexOf(entity) >= 0) { details.push(candidate); continue; }
+        if (["recipes", "saleLines", "purchaseLines", "salePayments", "productionInputs"].indexOf(entity) >= 0) { details.push(candidate); continue; }
         if (entity === "company" && !candidate.data.company && !candidate.data.companyNit && !candidate.data.city && !candidate.data.activityType) continue;
         candidate.unknown = collectUnknownFields(header, sourceRow, sheet.config.mapping);
         candidates.push(candidate);
@@ -933,18 +1266,28 @@ window.Pyme360App = (function () {
         var value = data[field.key];
         if (field.required && (value === "" || value == null)) errors.push("Falta " + field.label.toLocaleLowerCase("es-CO") + ".");
       });
-      ["stock", "min", "cost", "price", "taxRate", "total", "quantity", "amount", "wasteKg", "electricityKwh", "waterM3", "fuelL", "organicKg", "recyclableKg", "nonRecyclableKg", "hazardousKg", "recycledKg", "productionUnits"].forEach(function (key) {
+      ["stock", "min", "cost", "price", "discount", "taxRate", "unitPrice", "total", "quantity", "amount", "wasteKg", "electricityKwh", "waterM3", "fuelL", "organicKg", "recyclableKg", "nonRecyclableKg", "hazardousKg", "recycledKg", "productionUnits"].forEach(function (key) {
         if (data[key] !== "" && data[key] != null && (!Number.isFinite(Number(data[key])) || Number(data[key]) < 0)) errors.push(key === "total" ? "El total no puede ser negativo." : "El valor de " + key + " debe ser un número igual o mayor que cero.");
       });
       if (data.taxRate !== "" && Number(data.taxRate) > 100) errors.push("La tarifa de IVA debe estar entre 0 y 100.");
-      ["stock", "min", "cost", "price", "taxRate", "total", "quantity", "amount", "wasteKg", "electricityKwh", "waterM3", "fuelL", "organicKg", "recyclableKg", "nonRecyclableKg", "hazardousKg", "recycledKg", "productionUnits"].forEach(function (key) {
+      ["stock", "min", "cost", "price", "discount", "taxRate", "unitPrice", "total", "quantity", "amount", "wasteKg", "electricityKwh", "waterM3", "fuelL", "organicKg", "recyclableKg", "nonRecyclableKg", "hazardousKg", "recycledKg", "productionUnits"].forEach(function (key) {
         if (data[key] === "" && importFields(entity).some(function (field) { return field.key === key && field.required; })) errors.push("El valor de " + key + " debe ser un número.");
       });
-      if (["date", "paidDate", "completedDate"].some(function (key) { return data[key] && !validImportDate(data[key]); })) errors.push("La fecha debe tener un formato válido.");
+      if (["date", "paidDate", "completedDate", "externalInvoiceDate"].some(function (key) { return data[key] && !validImportDate(data[key]); })) errors.push("La fecha debe tener un formato válido.");
       if (entity === "environment" && data.period && (!/^\d{4}-\d{2}$/.test(data.period) || Number(data.period.slice(5, 7)) < 1 || Number(data.period.slice(5, 7)) > 12)) errors.push("El período debe tener el formato AAAA-MM y un mes entre 01 y 12.");
       if (entity === "contacts" && data.role) {
-        data.role = normalizedEnum(data.role, ["Cliente", "Proveedor", "Cliente · Proveedor"]);
+        if (normalizedText(data.role) === "cliente ordinario") {
+          data.role = "Cliente";
+          data.ordinaryCustomer = true;
+        } else data.role = normalizedEnum(data.role, ["Cliente", "Proveedor", "Cliente · Proveedor"]);
         if (["cliente", "proveedor", "cliente proveedor"].indexOf(normalizedText(data.role)) < 0) errors.push("El tipo debe ser Cliente, Proveedor o Cliente · Proveedor.");
+        if (data.ordinaryCustomer !== "" && data.ordinaryCustomer != null) {
+          var ordinaryValue = normalizedText(data.ordinaryCustomer);
+          if (["true", "1", "si", "x", "ordinario", "cliente ordinario"].indexOf(ordinaryValue) >= 0) data.ordinaryCustomer = true;
+          else if (["false", "0", "no", "falso"].indexOf(ordinaryValue) >= 0) data.ordinaryCustomer = false;
+          else errors.push("Cliente ordinario debe indicar Sí o No.");
+        }
+        if (data.ordinaryCustomer === true && normalizedText(data.role).indexOf("cliente") < 0) errors.push("La marca Cliente ordinario solo aplica a contactos con tipo Cliente.");
       }
       if (entity === "products" && data.type) {
         data.type = normalizedEnum(data.type, ["Producto terminado", "Materia prima", "Insumo"]);
@@ -955,11 +1298,15 @@ window.Pyme360App = (function () {
         if (data.customer && !customer) errors.push("No se encontró el cliente. Regístralo en Contactos o corrige la referencia.");
         else if (customer) data.customer = customer.name;
         if (data.status) {
-          data.status = normalizedEnum(data.status, ["Pagada", "Pendiente de pago"]);
-          if (["pagada", "pendiente de pago"].indexOf(normalizedText(data.status)) < 0) errors.push("El estado de venta debe ser Pagada o Pendiente de pago.");
+          data.status = normalizedEnum(data.status, ["Pagada", "Pendiente de pago", "Pago parcial"]);
+          if (["pagada", "pendiente de pago", "pago parcial"].indexOf(normalizedText(data.status)) < 0) errors.push("El estado de venta debe ser Pagada, Pago parcial o Pendiente de pago.");
         }
         if (!data.status) data.status = data.payment === "Contado" ? "Pagada" : "Pendiente de pago";
         if (!data.payment) data.payment = data.status === "Pagada" ? "Contado" : "Crédito";
+        if (data.invoiceFollowUpStatus) {
+          data.invoiceFollowUpStatus = normalizedEnum(data.invoiceFollowUpStatus, ["Por revisar", "Registrada por fuera de Pyme360", "No aplica, según revisión del usuario"]);
+          if (["por revisar", "registrada por fuera de pyme360", "no aplica segun revision del usuario"].indexOf(normalizedText(data.invoiceFollowUpStatus)) < 0) errors.push("El seguimiento debe ser Por revisar, Registrada por fuera de Pyme360 o No aplica según revisión del usuario.");
+        }
       } else if (entity === "purchases") {
         var supplier = lookupParty(data.supplier, "Proveedor", candidates);
         if (data.supplier && !supplier) errors.push("No se encontró el proveedor. Regístralo en Contactos o corrige la referencia.");
@@ -1014,8 +1361,22 @@ window.Pyme360App = (function () {
         if (data.amount === "" || Number(data.amount) <= 0) errors.push("La cantidad de la receta debe ser mayor que cero.");
       } else if (detail.entity === "saleLines") {
         if (!lookupDocument("sales", data.saleNumber, candidates)) errors.push("No se encontró la venta relacionada.");
-        if (!lookupProduct(data.sku, candidates)) errors.push("No se encontró el producto de la venta.");
+        var saleItem = lookupProduct(data.sku, candidates);
+        if (!saleItem) errors.push("No se encontró el producto de la venta.");
+        else if (saleItem.type !== "Producto terminado") errors.push("Las ventas solo pueden incluir productos terminados.");
         if (data.quantity === "" || Number(data.quantity) <= 0) errors.push("La cantidad debe ser mayor que cero.");
+        if (data.unitPrice !== "" && Number(data.unitPrice) < 0) errors.push("El precio unitario no puede ser negativo.");
+        if (data.taxRate !== "" && (Number(data.taxRate) < 0 || Number(data.taxRate) > 100)) errors.push("El IVA debe estar entre 0 y 100%.");
+      } else if (detail.entity === "purchaseLines") {
+        if (!lookupDocument("purchases", data.purchaseNumber, candidates)) errors.push("No se encontró la compra relacionada.");
+        var purchaseItem = lookupProduct(data.sku, candidates);
+        if (!purchaseItem) errors.push("No se encontró el material comprado.");
+        else if (purchaseItem.type !== "Materia prima" && purchaseItem.type !== "Insumo") errors.push("Las compras solo pueden incluir materias primas o insumos.");
+        if (data.quantity === "" || Number(data.quantity) <= 0 || data.total === "" || Number(data.total) < 0) errors.push("La cantidad debe ser mayor que cero y el costo total no puede ser negativo.");
+      } else if (detail.entity === "salePayments") {
+        if (!lookupDocument("sales", data.saleNumber, candidates)) errors.push("No se encontró la venta relacionada.");
+        if (!validImportDate(data.date)) errors.push("La fecha del pago debe tener un formato válido.");
+        if (data.amount === "" || Number(data.amount) <= 0) errors.push("El valor recibido debe ser mayor que cero.");
       } else {
         if (!lookupDocument("production", data.productionNumber, candidates)) errors.push("No se encontró la orden de producción relacionada.");
         if (!lookupProduct(data.sku, candidates)) errors.push("No se encontró el material consumido.");
@@ -1027,12 +1388,14 @@ window.Pyme360App = (function () {
       if (errors.length) errors.forEach(function (reason) { issues.push({ sheet: detail.sourceSheet, row: detail.sourceRow, label: importEntityLabel(detail.entity), reason: reason }); });
       if (detail.valid) {
         var detailKey = importRecordKey(detail.entity, data);
-        var parentEntity = detail.entity === "recipes" ? "products" : detail.entity === "saleLines" ? "sales" : "production";
-        var parentRef = detail.entity === "recipes" ? data.productSku : detail.entity === "saleLines" ? data.saleNumber : data.productionNumber;
+        var parentEntity = detail.entity === "recipes" ? "products" : detail.entity === "saleLines" || detail.entity === "salePayments" ? "sales" : detail.entity === "purchaseLines" ? "purchases" : "production";
+        var parentRef = detail.entity === "recipes" ? data.productSku : detail.entity === "saleLines" || detail.entity === "salePayments" ? data.saleNumber : detail.entity === "purchaseLines" ? data.purchaseNumber : data.productionNumber;
         var parent = detail.entity === "recipes" ? lookupProduct(parentRef, candidates) : lookupDocument(parentEntity, parentRef, candidates);
         var childRef = detail.entity === "recipes" ? data.materialSku : data.sku;
         if (detail.entity === "recipes") detail.duplicate = !!(parent && parent.inputs && parent.inputs.some(function (line) { return normalizedText(line.sku) === normalizedText(childRef); }));
         else if (detail.entity === "saleLines") detail.duplicate = !!(parent && parent.lines && parent.lines.some(function (line) { return normalizedText(line.sku) === normalizedText(childRef); }));
+        else if (detail.entity === "purchaseLines") detail.duplicate = !!(parent && purchaseLines(parent).some(function (line) { return normalizedText(line.sku) === normalizedText(childRef); }));
+        else if (detail.entity === "salePayments") detail.duplicate = !!(parent && (parent.payments || []).some(function (payment) { return (data.paymentId && normalizedText(payment.id) === normalizedText(data.paymentId)) || (normalizedText(payment.date) === normalizedText(data.date) && Number(payment.amount) === Number(data.amount) && normalizedText(payment.method) === normalizedText(data.method)); }));
         else detail.duplicate = !!(parent && parent.inputConsumption && parent.inputConsumption.some(function (line) { return normalizedText(line.sku) === normalizedText(childRef); }));
         var seenDetailKey = "detail|" + detail.entity + "|" + detailKey;
         if (seen[seenDetailKey]) detail.duplicate = true;
@@ -1090,16 +1453,17 @@ window.Pyme360App = (function () {
       var importedId = data.id && !["contacts", "inventory", "sales", "purchases", "production"].some(function (name) { return (next[name] || []).some(function (item) { return item.id === data.id; }); }) ? data.id : "imp-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
       target = Object.assign({}, data, { id: importedId });
       if (entity === "contacts") {
-        target.email = target.email || ""; target.phone = target.phone || ""; target.idNumber = target.idNumber || "";
+        target.email = target.email || ""; target.phone = target.phone || ""; target.idNumber = target.idNumber || ""; target.ordinaryCustomer = target.ordinaryCustomer === true;
       } else if (entity === "products") {
         ["stock", "min", "cost", "price", "taxRate"].forEach(function (key) { if (target[key] === "") target[key] = 0; });
         target.inputs = [];
       } else if (entity === "sales") {
-        target.total = Number(target.total) || 0; target.lines = []; target.demo = true;
+        target.total = Number(target.total) || 0; target.lines = []; target.payments = []; target.demo = true; target.inventoryApplied = false;
+        if (!target.invoiceFollowUpStatus) target.invoiceFollowUpStatus = "Por revisar";
       } else if (entity === "purchases") {
-        target.total = Number(target.total) || 0; target.detail = target.detail || "";
+        target.total = Number(target.total) || 0; target.detail = target.detail || ""; target.lines = []; target.inventoryApplied = false;
       } else if (entity === "production") {
-        target.quantity = Number(target.quantity) || 0; target.wasteKg = Number(target.wasteKg) || 0; target.inputConsumption = [];
+        target.quantity = Number(target.quantity) || 0; target.wasteKg = Number(target.wasteKg) || 0; target.inputConsumption = []; target.inventoryApplied = false;
         var linkedProduct = next.inventory.find(function (product) { return normalizedText(product.sku) === normalizedText(data.productSku) || normalizedText(product.name) === normalizedText(data.product); });
         if (linkedProduct) target.productId = linkedProduct.id;
       } else if (entity === "environment") {
@@ -1113,7 +1477,10 @@ window.Pyme360App = (function () {
           if (key === "id" || key === "lines" || key === "inputs" || key === "inputConsumption") return;
           if (data[key] !== "" && data[key] != null) target[key] = data[key];
         });
-        if (entity === "production") {
+        if (entity === "sales") {
+          if (!Array.isArray(target.payments)) target.payments = [];
+          refreshSaleStatus(target);
+        } else if (entity === "production") {
           var productRef = next.inventory.find(function (product) { return normalizedText(product.sku) === normalizedText(data.productSku) || normalizedText(product.name) === normalizedText(data.product); });
           if (productRef) target.productId = productRef.id;
         }
@@ -1126,8 +1493,8 @@ window.Pyme360App = (function () {
     if (!importSession) return;
     var analysis = buildImportAnalysis();
     var updateDuplicates = !!importSession.updateDuplicates;
-    var accepted = analysis.valid.concat(updateDuplicates ? analysis.duplicates.filter(function (item) { return item.entity !== "recipes" && item.entity !== "saleLines" && item.entity !== "productionInputs"; }) : []);
-    var stats = { added: 0, updated: 0, skipped: updateDuplicates ? 0 : analysis.duplicates.filter(function (item) { return ["recipes", "saleLines", "productionInputs"].indexOf(item.entity) < 0; }).length };
+    var accepted = analysis.valid.concat(updateDuplicates ? analysis.duplicates.filter(function (item) { return ["recipes", "saleLines", "purchaseLines", "salePayments", "productionInputs"].indexOf(item.entity) < 0; }) : []);
+    var stats = { added: 0, updated: 0, skipped: updateDuplicates ? 0 : analysis.duplicates.filter(function (item) { return ["recipes", "saleLines", "purchaseLines", "salePayments", "productionInputs"].indexOf(item.entity) < 0; }).length };
     try {
       var next = JSON.parse(JSON.stringify(state));
       var priority = { company: 0, contacts: 1, products: 2, sales: 3, purchases: 4, production: 5, environment: 6 };
@@ -1141,7 +1508,11 @@ window.Pyme360App = (function () {
           if (candidate.entity !== parentEntity) return false;
           return parentEntity === "products" ? normalizedText(candidate.data.sku) === normalizedText(reference) || normalizedText(candidate.data.name) === normalizedText(reference) : normalizedText(candidate.data.number) === normalizedText(reference);
         });
-        if (matches.length) return matches.some(function (parent) { return accepted.indexOf(parent) >= 0; });
+        if (matches.length) {
+          if (matches.some(function (parent) { return accepted.indexOf(parent) >= 0; })) return true;
+          var existingParent = parentEntity === "products" ? state.inventory.some(function (item) { return normalizedText(item.sku) === normalizedText(reference) || normalizedText(item.name) === normalizedText(reference); }) : (parentEntity === "sales" ? state.sales : parentEntity === "purchases" ? state.purchases : state.production).some(function (item) { return normalizedText(item.number) === normalizedText(reference); });
+          return existingParent;
+        }
         return true;
       }
       analysis.details.forEach(function (detail) {
@@ -1163,8 +1534,31 @@ window.Pyme360App = (function () {
           if (!sale || !saleProduct) { stats.skipped += 1; return; }
           sale.lines = sale.lines || [];
           var saleLine = sale.lines.find(function (line) { return normalizedText(line.sku) === normalizedText(saleProduct.sku); });
-          if (saleLine) { if (updateDuplicates) { saleLine.quantity = Number(data.quantity); stats.updated += 1; } else stats.skipped += 1; }
-          else { sale.lines.push({ sku: saleProduct.sku, quantity: Number(data.quantity) }); stats.added += 1; }
+          if (saleLine) { if (updateDuplicates) { saleLine.quantity = Number(data.quantity); if (data.unitPrice !== "") saleLine.unitPrice = Number(data.unitPrice); if (data.taxRate !== "") saleLine.taxRate = Number(data.taxRate); stats.updated += 1; } else stats.skipped += 1; }
+          else { sale.lines.push({ sku: saleProduct.sku, quantity: Number(data.quantity), unitPrice: data.unitPrice === "" ? Number(saleProduct.price) || 0 : Number(data.unitPrice), taxRate: data.taxRate === "" ? (saleProduct.taxType === "Gravado" ? Number(saleProduct.taxRate) || 0 : 0) : Number(data.taxRate) }); stats.added += 1; }
+        } else if (detail.entity === "purchaseLines") {
+          if (!parentWasAccepted(detail, "purchases", data.purchaseNumber)) { stats.skipped += 1; return; }
+          var purchase = next.purchases.find(function (item) { return normalizedText(item.number) === normalizedText(data.purchaseNumber); });
+          var purchaseProduct = next.inventory.find(function (item) { return normalizedText(item.sku) === normalizedText(data.sku) || normalizedText(item.name) === normalizedText(data.sku); });
+          if (!purchase || !purchaseProduct) { stats.skipped += 1; return; }
+          if (!Array.isArray(purchase.lines)) purchase.lines = [];
+          var purchaseLine = purchase.lines.find(function (line) { return normalizedText(line.sku) === normalizedText(purchaseProduct.sku); });
+          if (purchaseLine) { if (updateDuplicates) { purchaseLine.quantity = Number(data.quantity); purchaseLine.total = Number(data.total); stats.updated += 1; } else stats.skipped += 1; }
+          else { purchase.lines.push({ sku: purchaseProduct.sku, quantity: Number(data.quantity), total: Number(data.total) }); stats.added += 1; }
+        } else if (detail.entity === "salePayments") {
+          if (!parentWasAccepted(detail, "sales", data.saleNumber)) { stats.skipped += 1; return; }
+          var paidSale = next.sales.find(function (item) { return normalizedText(item.number) === normalizedText(data.saleNumber); });
+          if (!paidSale) { stats.skipped += 1; return; }
+          if (!Array.isArray(paidSale.payments)) paidSale.payments = [];
+          var paymentMatch = paidSale.payments.find(function (payment) { return (data.paymentId && normalizedText(payment.id) === normalizedText(data.paymentId)) || (normalizedText(payment.date) === normalizedText(data.date) && Number(payment.amount) === Number(data.amount) && normalizedText(payment.method) === normalizedText(data.method)); });
+          if (paymentMatch) { if (updateDuplicates) { paymentMatch.date = data.date; paymentMatch.amount = Number(data.amount); paymentMatch.method = data.method || "Otro"; stats.updated += 1; } else stats.skipped += 1; }
+          else {
+            var paidAlready = paidSale.payments.reduce(function (sum, payment) { return sum + (Number(payment.amount) || 0); }, 0);
+            if (paidAlready + Number(data.amount) > Number(paidSale.total)) { stats.skipped += 1; return; }
+            paidSale.payments.push({ id: data.paymentId || "imp-pay-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6), date: data.date, amount: Number(data.amount), method: data.method || "Otro" });
+            stats.added += 1;
+          }
+          refreshSaleStatus(paidSale);
         } else {
           if (!parentWasAccepted(detail, "production", data.productionNumber)) { stats.skipped += 1; return; }
           var order = next.production.find(function (item) { return normalizedText(item.number) === normalizedText(data.productionNumber); });
@@ -1179,19 +1573,11 @@ window.Pyme360App = (function () {
       });
       analysis.extras.forEach(function (extra) { addImportExtras(next, [extra], String(extra.entity), String(extra.recordKey)); });
 
-      var serialized = JSON.stringify(next);
-      var bytes = new Blob([serialized]).size;
-      var localBytes = 0;
-      for (var index = 0; index < localStorage.length; index += 1) {
-        var key = localStorage.key(index);
-        if (key !== STORAGE_KEY) localBytes += ((key || "").length + (localStorage.getItem(key) || "").length) * 2;
-      }
-      if (bytes + localBytes > 4500000) throw new Error("Los datos ocuparían demasiado espacio en este navegador. Divide el archivo o descarga tu Excel maestro antes de continuar.");
-      localStorage.setItem(STORAGE_KEY, serialized);
       state = next;
+      saveState();
       importSession = null;
     } catch (error) {
-      toast("No se aplicó ningún cambio", error && error.name === "QuotaExceededError" ? "El navegador no tiene espacio suficiente. Libera espacio e inténtalo de nuevo." : (error.message || "No se pudo guardar la importación."));
+      toast("No se aplicó ningún cambio", error.message || "No se pudo preparar la importación.");
       return;
     }
     render();
@@ -1210,7 +1596,7 @@ window.Pyme360App = (function () {
 
   function openModal(title, description, content) {
     var root = document.getElementById("modal-root");
-    root.innerHTML = '<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-label="' + esc(title) + '"><div class="modal-header"><div><h2>' + title + '</h2><p>' + description + '</p></div><button class="modal-close" type="button" data-action="close-modal" aria-label="Cerrar">×</button></div>' + content + '</section></div>';
+    root.innerHTML = '<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-label="' + esc(title) + '"><div class="modal-header"><div><h2>' + esc(title) + '</h2><p>' + esc(description) + '</p></div><button class="modal-close" type="button" data-action="close-modal" aria-label="Cerrar">×</button></div>' + content + '</section></div>';
     root.querySelector(".modal-backdrop").addEventListener("click", function (event) {
       if (event.target.classList.contains("modal-backdrop")) closeModal();
     });
@@ -1219,6 +1605,11 @@ window.Pyme360App = (function () {
   }
 
   function closeModal() {
+    if (persistencePending) { deferredClose = true; return; }
+    closeModalNow();
+  }
+
+  function closeModalNow() {
     if (activeReceiptRead) {
       activeReceiptRead.cancelled = true;
       var workerToStop = activeReceiptRead.worker;
@@ -1240,19 +1631,54 @@ window.Pyme360App = (function () {
     return '<form class="modal-form" id="' + id + '"><div class="form-grid">' + fields + '</div>' + (note ? '<div class="form-note">' + note + '</div>' : "") + '<div class="modal-footer"><button type="button" class="button button-secondary" data-action="close-modal">Cancelar</button><button type="submit" class="button button-primary">' + submitText + '</button></div></form>';
   }
 
-  function productOptions(types) {
+  function productOptions(types, selectedId) {
     return state.inventory.filter(function (item) { return !types || types.indexOf(item.type) >= 0; }).map(function (item) {
-      return '<option value="' + esc(item.id) + '">' + esc(item.name) + ' · ' + num(item.stock, 1) + ' ' + esc(item.unit) + '</option>';
+      return '<option value="' + esc(item.id) + '"' + (item.id === selectedId ? " selected" : "") + '>' + esc(item.name) + ' · ' + num(item.stock, 1) + ' ' + esc(item.unit) + '</option>';
     }).join("");
   }
 
-  function contactOptions(role) {
+  function recipeLineHtml(existingLine) {
+    var materials = state.inventory.filter(function (item) { return item.type === "Materia prima" || item.type === "Insumo"; });
+    var options = materials.map(function (item) { return '<option value="' + esc(item.id) + '"' + (existingLine && existingLine.sku === item.sku ? " selected" : "") + '>' + esc(item.name) + ' · ' + num(item.stock, 1) + ' ' + esc(item.unit) + ' disponibles</option>'; }).join("");
+    return '<div class="recipe-line"><label class="recipe-material-field"><span>Material</span><select class="recipe-material-select" name="recipeMaterial"><option value="">Elige un material</option>' + options + '</select></label><label class="recipe-amount-field"><span>Cantidad por unidad</span><span class="recipe-amount-control"><input name="recipeAmount" type="number" min="0.001" step="any" value="' + (existingLine ? esc(existingLine.amount) : '') + '" placeholder="Ej. 0,5"><small data-unit-label>unidad</small></span></label><button type="button" class="button-quiet button-quiet-danger recipe-remove-button hidden" data-action="recipe-remove-line" aria-label="Quitar material">Quitar</button></div>';
+  }
+
+  function updateRecipeUnit(select) {
+    var row = select.closest(".recipe-line");
+    var material = state.inventory.find(function (item) { return item.id === select.value; });
+    var unit = row && row.querySelector("[data-unit-label]");
+    if (unit) unit.textContent = material ? material.unit : "unidad";
+  }
+
+  function updateRecipeRemoveButtons() {
+    var rows = Array.prototype.slice.call(document.querySelectorAll("#recipe-lines .recipe-line"));
+    rows.forEach(function (row) { row.querySelector(".recipe-remove-button").classList.toggle("hidden", rows.length < 2); });
+  }
+
+  function addRecipeLine() {
+    var container = document.getElementById("recipe-lines");
+    if (!container) return;
+    if (container.querySelectorAll(".recipe-line").length >= 20) return toast("La receta ya tiene muchos materiales", "Puedes agregar hasta 20 materiales por producto.");
+    container.insertAdjacentHTML("beforeend", recipeLineHtml());
+    updateRecipeRemoveButtons();
+  }
+
+  function removeRecipeLine(button) {
+    var row = button.closest(".recipe-line");
+    if (!row) return;
+    row.remove();
+    updateRecipeRemoveButtons();
+  }
+
+  function contactOptions(role, selectedId) {
     return state.contacts.filter(function (item) { return !role || item.role.indexOf(role) >= 0; }).map(function (item) {
-      return '<option value="' + esc(item.id) + '">' + esc(item.name) + '</option>';
+      return '<option value="' + esc(item.id) + '"' + (item.id === selectedId ? " selected" : "") + '>' + esc(item.name) + '</option>';
     }).join("");
   }
 
-  function openSaleModal() {
+  function openSaleModal(saleId) {
+    var editingSale = saleId ? state.sales.find(function (item) { return item.id === saleId; }) : null;
+    if (saleId && !editingSale) return toast("No encontramos esa venta", "Actualiza la lista e inténtalo de nuevo.");
     var hasCustomer = state.contacts.some(function (item) { return item.role.indexOf("Cliente") >= 0; });
     var hasProduct = state.inventory.some(function (item) { return item.type === "Producto terminado"; });
     if (!hasCustomer || !hasProduct) {
@@ -1262,43 +1688,125 @@ window.Pyme360App = (function () {
         '<button class="button button-quiet" data-action="close-modal">Cerrar</button></div></div>';
       return openModal("Completa estos datos primero", "Tu empresa comienza con sus propios registros.", nextSteps);
     }
-    var fields = formField("Cliente", "sale-customer", '<select name="customer" id="sale-customer" required><option value="">Selecciona un cliente</option>' + contactOptions("Cliente") + '</select>') +
-      formField("Fecha", "sale-date", '<input name="date" id="sale-date" type="date" value="' + today() + '" required>') +
-      formField("Producto", "sale-product", '<select name="product" id="sale-product" required>' + productOptions(["Producto terminado"]) + '</select>') +
-      formField("Cantidad", "sale-quantity", '<input name="quantity" id="sale-quantity" type="number" min="1" step="1" value="10" required>') +
-      formField("Forma de pago", "sale-payment", '<select name="payment" id="sale-payment"><option>Contado</option><option>15 días</option><option>30 días</option><option>Otro acuerdo</option></select>') +
-      formField("Descuento (COP)", "sale-discount", '<input name="discount" id="sale-discount" type="number" min="0" step="1000" value="0">') +
-      '<div class="field full"><label>Resumen</label><div class="form-note" id="sale-preview" style="margin:0">Selecciona un producto para ver el total aproximado.</div></div>';
-    openModal("Registrar una venta", "Unos pocos datos para dejar tu venta organizada.", modalForm("sale-form", fields, "Modo de demostración: la venta y el movimiento de inventario se guardan aquí. La factura no se transmite a la DIAN.", "Guardar venta"));
+    var existingLines = editingSale ? (editingSale.lines || []) : [];
+    if (editingSale && existingLines.some(function (line) { return !state.inventory.some(function (item) { return item.sku === line.sku && item.type === "Producto terminado"; }); })) return toast("No se puede editar esta venta", "Uno de los productos originales ya no está registrado como producto terminado.");
+    var existingCustomer = editingSale && state.contacts.find(function (item) { return item.id === editingSale.customerId; });
+    if (editingSale && !existingCustomer) existingCustomer = state.contacts.find(function (item) { return item.name === editingSale.customer && item.role.indexOf("Cliente") >= 0; });
+    var salePayment = editingSale && editingSale.payment || "Contado";
+    var paymentChoices = ["Contado", "15 días", "30 días", "Otro acuerdo"];
+    if (paymentChoices.indexOf(salePayment) < 0) paymentChoices.push(salePayment);
+    var paymentOptions = paymentChoices.map(function (choice) { return '<option' + (choice === salePayment ? " selected" : "") + '>' + esc(choice) + '</option>'; }).join("");
+    var followUpStatus = editingSale && editingSale.invoiceFollowUpStatus || "Por revisar";
+    var followUpOptions = ["Por revisar", "Registrada por fuera de Pyme360", "No aplica, según revisión del usuario"].map(function (choice) {
+      return '<option value="' + esc(choice) + '"' + (choice === followUpStatus ? " selected" : "") + '>' + esc(choice) + '</option>';
+    }).join("");
+    var fields = (editingSale ? '<input type="hidden" name="saleId" value="' + esc(editingSale.id) + '">' : "") +
+      formField("Cliente", "sale-customer", '<select name="customer" id="sale-customer" required><option value="">Selecciona un cliente</option>' + contactOptions("Cliente", existingCustomer && existingCustomer.id) + '</select>') +
+      formField("Fecha", "sale-date", '<input name="date" id="sale-date" type="date" value="' + esc(editingSale && editingSale.date ? editingSale.date : today()) + '" required>') +
+      '<div class="field full"><label>Productos de esta venta</label><div class="document-lines" id="sale-lines">' + (existingLines.length ? existingLines.map(function (line) { return saleLineHtml(line); }).join("") : saleLineHtml()) + '</div><button type="button" class="button button-quiet document-add-line" data-action="sale-add-line">＋ Agregar otro producto</button><small class="field-hint">Puedes incluir varios productos en una sola venta.</small></div>' +
+      formField("Forma de pago", "sale-payment", '<select name="payment" id="sale-payment">' + paymentOptions + '</select>') +
+      formField("Descuento (COP)", "sale-discount", '<input name="discount" id="sale-discount" type="number" min="0" step="1000" value="' + (editingSale ? Number(editingSale.discount) || 0 : 0) + '">') +
+      formField("Seguimiento de factura", "invoiceFollowUpStatus", '<select name="invoiceFollowUpStatus" id="sale-follow-up-status">' + followUpOptions + '</select><small class="field-hint">Marca el estado según tu revisión o la de tu contador. Pyme360 no consulta ni envía datos a la DIAN.</small>', true) +
+      formField("Número del documento externo (opcional)", "externalInvoiceNumber", '<input name="externalInvoiceNumber" id="sale-external-invoice-number" type="text" maxlength="80" value="' + esc(editingSale && editingSale.externalInvoiceNumber || '') + '" placeholder="Ej. documento emitido por fuera">') +
+      formField("Fecha del documento (opcional)", "externalInvoiceDate", '<input name="externalInvoiceDate" id="sale-external-invoice-date" type="date" value="' + esc(editingSale && editingSale.externalInvoiceDate || '') + '">') +
+      '<div class="field full"><label>Resumen</label><div class="form-note" id="sale-preview" style="margin:0">Agrega productos para ver el total aproximado.</div></div>';
+    openModal(editingSale ? "Editar venta " + editingSale.number : "Registrar una venta", editingSale ? "Ajusta los datos y revisa el total antes de guardar." : "Unos pocos datos para dejar tu venta organizada.", modalForm("sale-form", fields, "Modo de demostración: los cambios actualizan el inventario. El seguimiento de factura es manual; no se emite ni se transmite a la DIAN.", editingSale ? "Guardar cambios" : "Guardar venta"));
     var form = document.getElementById("sale-form");
-    form.addEventListener("change", updateSalePreview);
+    form.addEventListener("change", function (event) {
+      if (event.target.matches("[data-sale-product]")) updateSaleLineDefaults(event.target.closest(".sale-line"));
+      updateSalePreview();
+    });
     form.addEventListener("input", updateSalePreview);
+    updateSalePreview();
+    updateSaleLineRemoveButtons();
+  }
+
+  function saleLineHtml(existingLine) {
+    var selectedProduct = existingLine && state.inventory.find(function (item) { return item.sku === existingLine.sku; });
+    var defaultPrice = existingLine && existingLine.unitPrice != null ? Number(existingLine.unitPrice) : (selectedProduct ? Number(selectedProduct.price) || 0 : 0);
+    var defaultTaxRate = existingLine && existingLine.taxRate != null ? Number(existingLine.taxRate) : (selectedProduct && selectedProduct.taxType === "Gravado" ? Number(selectedProduct.taxRate) || 0 : 0);
+    var options = state.inventory.filter(function (item) { return item.type === "Producto terminado"; }).map(function (item) {
+      return '<option value="' + esc(item.id) + '"' + (existingLine && existingLine.sku === item.sku ? " selected" : "") + '>' + esc(item.name) + ' · ' + num(item.stock, 1) + " " + esc(item.unit) + ' disponibles</option>';
+    }).join("");
+    return '<div class="document-line sale-line"><label><span>Producto</span><select data-sale-product required><option value="">Elige un producto</option>' + options + '</select></label><label><span>Cantidad</span><input data-sale-quantity type="number" min="0.001" step="any" value="' + (existingLine ? esc(existingLine.quantity) : "1") + '" required></label><label><span>Precio por unidad (COP)</span><input data-sale-unit-price type="number" min="0" step="100" value="' + esc(defaultPrice) + '" required></label><input type="hidden" data-sale-tax-rate value="' + esc(defaultTaxRate) + '"><button type="button" class="button-quiet button-quiet-danger document-remove-line" data-action="sale-remove-line" aria-label="Quitar producto">Quitar</button></div>';
+  }
+
+  function updateSaleLineDefaults(row) {
+    if (!row) return;
+    var selector = row.querySelector("[data-sale-product]");
+    var product = selector && state.inventory.find(function (item) { return item.id === selector.value; });
+    if (!product) return;
+    row.querySelector("[data-sale-unit-price]").value = String(Number(product.price) || 0);
+    row.querySelector("[data-sale-tax-rate]").value = product.taxType === "Gravado" ? String(Number(product.taxRate) || 0) : "0";
+  }
+
+  function updateSaleLineRemoveButtons() {
+    var rows = Array.prototype.slice.call(document.querySelectorAll("#sale-lines .sale-line"));
+    rows.forEach(function (row) { var button = row.querySelector(".document-remove-line"); if (button) button.classList.toggle("hidden", rows.length < 2); });
+  }
+
+  function addSaleLine() {
+    var container = document.getElementById("sale-lines");
+    if (!container) return;
+    if (container.querySelectorAll(".sale-line").length >= 30) return toast("La venta tiene muchos productos", "Puedes agregar hasta 30 productos en una venta.");
+    container.insertAdjacentHTML("beforeend", saleLineHtml());
+    updateSaleLineRemoveButtons();
+    updateSalePreview();
+  }
+
+  function removeSaleLine(button) {
+    var row = button.closest(".sale-line");
+    if (!row || document.querySelectorAll("#sale-lines .sale-line").length < 2) return;
+    row.remove();
+    updateSaleLineRemoveButtons();
     updateSalePreview();
   }
 
   function updateSalePreview() {
     var form = document.getElementById("sale-form");
     if (!form) return;
-    var product = state.inventory.find(function (item) { return item.id === form.elements.product.value; });
-    var quantity = Number(form.elements.quantity.value) || 0;
+    var subtotal = 0, taxTotal = 0, quantityTotal = 0, labels = [];
+    Array.prototype.slice.call(form.querySelectorAll(".sale-line")).forEach(function (row) {
+      var product = state.inventory.find(function (item) { return item.id === row.querySelector("[data-sale-product]").value; });
+      var quantity = Number(row.querySelector("[data-sale-quantity]").value) || 0;
+      if (!product || quantity <= 0) return;
+      var unitPriceInput = row.querySelector("[data-sale-unit-price]");
+      var taxRateInput = row.querySelector("[data-sale-tax-rate]");
+      var unitPrice = unitPriceInput ? Number(unitPriceInput.value) || 0 : Number(product.price) || 0;
+      var taxRate = taxRateInput ? Number(taxRateInput.value) || 0 : (product.taxType === "Gravado" ? Number(product.taxRate) || 0 : 0);
+      var lineSubtotal = unitPrice * quantity;
+      subtotal += lineSubtotal;
+      taxTotal += lineSubtotal * taxRate / 100;
+      quantityTotal += quantity;
+      labels.push(product.name);
+    });
     var discount = Number(form.elements.discount.value) || 0;
-    var subtotal = product ? Math.max(0, product.price * quantity - discount) : 0;
     var preview = document.getElementById("sale-preview");
-    var rate = product && product.taxType === "Gravado" ? Number(product.taxRate) || 0 : 0;
-    if (preview) preview.innerHTML = product ? esc(product.name) + " · " + quantity + " und. · IVA configurado (" + num(rate) + "%) · Total estimado: <strong>" + money(subtotal * (1 + rate / 100)) + "</strong>" : "Selecciona un producto para ver el total aproximado.";
+    var net = Math.max(0, subtotal - discount);
+    var taxAfterDiscount = subtotal ? taxTotal * (net / subtotal) : 0;
+    if (preview) preview.innerHTML = labels.length ? esc(labels.join(", ")) + " · " + num(quantityTotal, 2) + " unidades · Subtotal " + money(subtotal) + " · Descuento " + money(discount) + " · IVA estimado " + money(taxAfterDiscount) + " · Total " + money(Math.round(net + taxAfterDiscount)) : "Agrega productos para ver el total aproximado.";
   }
 
-  function openProductionModal() {
+  function openProductionModal(orderId) {
+    var editingOrder = orderId ? state.production.find(function (item) { return item.id === orderId; }) : null;
+    if (orderId && (!editingOrder || editingOrder.status !== "En proceso")) return toast("Esta orden ya está cerrada", "Solo puedes cambiar órdenes que siguen en proceso.");
     var finishedGoods = state.inventory.filter(function (item) { return item.type === "Producto terminado"; });
     if (!finishedGoods.length || !finishedGoods.some(function (item) { return item.inputs && item.inputs.length; })) {
-      return openModal("Prepara tu inventario", "Para iniciar producción necesitas un producto terminado con una receta.", '<div class="modal-form"><p>Agrega primero una materia prima o insumo. Luego crea el producto terminado y asígnale el material que consume por unidad.</p><div class="modal-footer"><button class="button button-secondary" data-page="inventory">Ver inventario</button><button class="button button-primary" data-action="new-product">Agregar producto</button></div></div>');
+      return openModal("Prepara tu inventario", "Para iniciar producción necesitas un producto terminado con una receta.", '<div class="modal-form"><p>Agrega primero las materias primas o insumos. Luego crea el producto terminado y arma la receta con cada material y su cantidad por unidad.</p><div class="modal-footer"><button class="button button-secondary" data-page="inventory">Ver inventario</button><button class="button button-primary" data-action="new-product">Agregar producto</button></div></div>');
     }
-    var fields = formField("Producto a fabricar", "production-product", '<select name="product" id="production-product" required>' + productOptions(["Producto terminado"]) + '</select>', true) +
-      formField("Cantidad a producir", "production-quantity", '<input name="quantity" id="production-quantity" type="number" min="1" step="1" value="20" required>') +
-      formField("Desperdicio aproximado (kg)", "production-waste", '<input name="waste" id="production-waste" type="number" min="0" step="0.1" value="0">') +
+    var currentProduct = editingOrder && state.inventory.find(function (item) { return item.id === editingOrder.productId; });
+    if (editingOrder && !currentProduct) return toast("No se puede editar esta orden", "No encontramos el producto terminado relacionado.");
+    if (editingOrder && !(currentProduct.inputs || []).length) return toast("No se puede editar esta orden", "El producto ya no tiene una receta. Revisa sus materiales antes de cambiarla.");
+    var productionOptions = finishedGoods.filter(function (item) { return item.inputs && item.inputs.length; }).map(function (item) {
+      return '<option value="' + esc(item.id) + '"' + (currentProduct && currentProduct.id === item.id ? " selected" : "") + '>' + esc(item.name) + ' · ' + num(item.stock, 1) + ' ' + esc(item.unit) + '</option>';
+    }).join("");
+    var fields = (editingOrder ? '<input type="hidden" name="productionId" value="' + esc(editingOrder.id) + '">' : '') +
+      formField("Producto a fabricar", "production-product", '<select name="product" id="production-product" required>' + productionOptions + '</select>', true) +
+      formField("Cantidad a producir", "production-quantity", '<input name="quantity" id="production-quantity" type="number" min="1" step="1" value="' + (editingOrder ? Number(editingOrder.quantity) || 1 : 20) + '" required>') +
+      formField("Desperdicio aproximado (kg)", "production-waste", '<input name="waste" id="production-waste" type="number" min="0" step="0.1" value="' + (editingOrder ? Number(editingOrder.wasteKg) || 0 : 0) + '">') +
       formField("Sede", "production-site", '<select name="site" id="production-site"><option>Sede principal</option></select>') +
       '<div class="field full"><label>Materiales estimados</label><div class="form-note" id="production-preview" style="margin:0">Elige un producto para revisar los materiales.</div></div>';
-    openModal("Crear orden de producción", "Registra lo que vas a fabricar y revisa los materiales necesarios.", modalForm("production-form", fields, "Al crearla, se reservan los materiales. Cuando termine, marca la orden como terminada para ingresar el producto al inventario.", "Crear orden"));
+    openModal(editingOrder ? "Editar orden " + editingOrder.number : "Crear orden de producción", editingOrder ? "Corrige el producto, la cantidad o el desperdicio estimado." : "Registra lo que vas a fabricar y revisa los materiales necesarios.", modalForm("production-form", fields, "Al guardar, se ajustan las materias primas reservadas. Cuando termine, marca la orden como terminada para ingresar el producto al inventario.", editingOrder ? "Guardar cambios" : "Crear orden"));
     var form = document.getElementById("production-form");
     form.addEventListener("change", updateProductionPreview);
     form.addEventListener("input", updateProductionPreview);
@@ -1320,7 +1828,8 @@ window.Pyme360App = (function () {
   }
 
   function openEnvironmentModal() {
-    openModal("Registra tu consumo", "Sube un recibo y revisa los datos que encontramos, o anótalos manualmente.",
+    var existingRecord = state.environment.some(function (item) { return item.period === currentPeriod; });
+    openModal(existingRecord ? "Actualiza los datos del mes" : "Registra tu consumo", existingRecord ? "Vuelve a leer un recibo o corrige manualmente el período seleccionado." : "Sube un recibo y revisa los datos que encontramos, o anótalos manualmente.",
       '<div class="modal-form"><div class="receipt-choice-grid">' +
       '<button type="button" class="receipt-choice" data-action="environment-pick-receipt"><span class="receipt-choice-icon">↑</span><strong>Subir un recibo</strong><small>Elige un PDF, JPG o PNG desde tu dispositivo.</small></button>' +
       '<button type="button" class="receipt-choice" data-action="environment-example"><span class="receipt-choice-icon">▤</span><strong>Probar con un ejemplo</strong><small>Usa un recibo ficticio para conocer el flujo.</small></button></div>' +
@@ -1354,6 +1863,7 @@ window.Pyme360App = (function () {
 
   function openManualEnvironmentModal() {
     var record = currentEnvironment();
+    var existingRecord = state.environment.some(function (item) { return item.period === currentPeriod; });
     var fields = formField("Energía de la factura (kWh)", "energy", '<input name="energy" id="energy" type="number" min="0" step="1" value="' + (record.electricityKwh || "") + '" placeholder="Ej. 1.250">') +
       formField("Agua consumida (m³)", "water", '<input name="water" id="water" type="number" min="0" step="0.1" value="' + (record.waterM3 || "") + '" placeholder="Ej. 42">') +
       formField("Combustible (litros)", "fuel", '<input name="fuel" id="fuel" type="number" min="0" step="0.1" value="' + (record.fuelL || "") + '" placeholder="Ej. 35">') +
@@ -1363,7 +1873,7 @@ window.Pyme360App = (function () {
       formField("No aprovechables (kg)", "nonrecyclable", '<input name="nonrecyclable" id="nonrecyclable" type="number" min="0" step="0.1" value="' + (record.nonRecyclableKg || "") + '">') +
       formField("Residuos peligrosos (kg)", "hazardous", '<input name="hazardous" id="hazardous" type="number" min="0" step="0.1" value="' + (record.hazardousKg || "") + '">') +
       formField("Reciclado o reutilizado (kg)", "recycled", '<input name="recycled" id="recycled" type="number" min="0" step="0.1" value="' + (record.recycledKg || "") + '">');
-    openModal("Registrar datos del mes", "Puedes encontrarlos en las facturas, medidores o registros de producción.", modalForm("environment-form", fields, "Los valores se guardan para " + monthName(currentPeriod) + ". Las emisiones de esta demostración usan factores ilustrativos.", "Guardar datos"));
+    openModal(existingRecord ? "Editar datos del mes" : "Registrar datos del mes", "Puedes encontrarlos en las facturas, medidores o registros de producción.", modalForm("environment-form", fields, "Los valores se guardan para " + monthName(currentPeriod) + ". Las emisiones de esta demostración usan factores ilustrativos.", existingRecord ? "Guardar cambios" : "Guardar datos"));
   }
 
   function openEnvironmentExample() {
@@ -1422,7 +1932,7 @@ window.Pyme360App = (function () {
       if (window.location.protocol === "file:") {
         readerError = "El archivo se eligió correctamente, pero al abrir index.html directamente el navegador puede bloquear el lector automático. No se guardó ningún dato.";
       }
-      openModal("No pudimos leer el recibo", esc(readerError),
+      openModal("No pudimos leer el recibo", readerError,
         '<div class="modal-form"><p>Puedes intentar con una foto más clara o escribir el consumo manualmente. No se guardó ningún dato.</p><div class="modal-footer"><button type="button" class="button button-secondary" data-action="close-modal">Cerrar</button><button type="button" class="button button-primary" data-action="environment-manual">Ingresar manualmente</button></div></div>');
     } finally {
       if (activeReceiptRead === readToken) activeReceiptRead = null;
@@ -1463,12 +1973,8 @@ window.Pyme360App = (function () {
     record[sourcePrefix + "CapturedAt"] = record.readingSources[key].confirmedAt;
     nextState.activity.unshift({ text: "Consumo confirmado desde recibo", detail: monthName(period) + " " + period.slice(0, 4) + " · " + amount + " " + (type === "energy" ? "kWh" : "m³"), time: "Ahora", icon: "♧" });
     nextState.activity = nextState.activity.slice(0, 8);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
-      state = nextState;
-    } catch (error) {
-      return toast("No se pudo guardar", "El navegador no tiene espacio. No se aplicó el cambio; descarga un Excel e inténtalo de nuevo.");
-    }
+    state = nextState;
+    saveState();
     currentPeriod = period;
     receiptSession = null;
     closeModal();
@@ -1476,7 +1982,9 @@ window.Pyme360App = (function () {
     toast("Consumo confirmado", "Guardamos el valor y el origen, sin conservar el recibo.");
   }
 
-  function openPurchaseModal() {
+  function openPurchaseModal(purchaseId) {
+    var editingPurchase = purchaseId ? state.purchases.find(function (item) { return item.id === purchaseId; }) : null;
+    if (purchaseId && !editingPurchase) return toast("No encontramos esa compra", "Actualiza la lista e inténtalo de nuevo.");
     var hasSupplier = state.contacts.some(function (item) { return item.role.indexOf("Proveedor") >= 0; });
     var hasMaterial = state.inventory.some(function (item) { return item.type === "Materia prima" || item.type === "Insumo"; });
     if (!hasSupplier || !hasMaterial) {
@@ -1485,21 +1993,85 @@ window.Pyme360App = (function () {
         (!hasMaterial ? '<button class="button button-primary" data-action="new-product">Agregar materia prima</button>' : '') +
         '<button class="button button-quiet" data-action="close-modal">Cerrar</button></div></div>');
     }
-    var fields = formField("Proveedor", "purchase-supplier", '<select name="supplier" id="purchase-supplier" required><option value="">Selecciona proveedor</option>' + contactOptions("Proveedor") + '</select>', true) +
-      formField("Producto recibido", "purchase-product", '<select name="product" id="purchase-product" required>' + productOptions(["Materia prima", "Insumo"]) + '</select>', true) +
-      formField("Cantidad", "purchase-quantity", '<input name="quantity" id="purchase-quantity" type="number" min="0.1" step="0.1" value="10" required>') +
-      formField("Costo total (COP)", "purchase-total", '<input name="total" id="purchase-total" type="number" min="0" step="1000" value="100000" required>') +
-      formField("Estado", "purchase-status", '<select name="status" id="purchase-status"><option>Recibida</option><option>Por recibir</option></select>');
-    openModal("Registrar una compra", "Registra lo recibido y actualiza las existencias.", modalForm("purchase-form", fields, "Esta acción crea un registro local de compra. Revisa la factura original con tu contador.", "Guardar compra"));
+    var existingSupplier = editingPurchase && state.contacts.find(function (item) { return item.id === editingPurchase.supplierId; });
+    if (!existingSupplier && editingPurchase) existingSupplier = state.contacts.find(function (item) { return item.name === editingPurchase.supplier && item.role.indexOf("Proveedor") >= 0; });
+    var existingLines = editingPurchase ? purchaseLines(editingPurchase) : [];
+    var statuses = ["Recibida", "Por recibir"];
+    if (editingPurchase && editingPurchase.status === "Pagada") statuses.push("Pagada");
+    var fields = (editingPurchase ? '<input type="hidden" name="purchaseId" value="' + esc(editingPurchase.id) + '">' : '') +
+      formField("Proveedor", "purchase-supplier", '<select name="supplier" id="purchase-supplier" required><option value="">Selecciona proveedor</option>' + contactOptions("Proveedor", existingSupplier && existingSupplier.id) + '</select>', true) +
+      '<div class="field full"><label>Productos comprados</label><div class="document-lines" id="purchase-lines">' + (existingLines.length ? existingLines.map(function (line) { return purchaseLineHtml(line); }).join("") : purchaseLineHtml()) + '</div><button type="button" class="button button-quiet document-add-line" data-action="purchase-add-line">＋ Agregar otro producto</button><small class="field-hint">Anota la cantidad y el costo total de cada producto.</small><div class="purchase-total-preview" id="purchase-preview">Total de compra: ' + money(editingPurchase ? editingPurchase.total : 100000) + '</div></div>' +
+      formField("Fecha", "purchase-date", '<input name="date" id="purchase-date" type="date" value="' + esc(editingPurchase && editingPurchase.date || today()) + '" required>') +
+      formField("Estado", "purchase-status", '<select name="status" id="purchase-status">' + statuses.map(function (status) { return '<option' + (editingPurchase ? (editingPurchase.status === status ? " selected" : "") : (status === "Recibida" ? " selected" : "")) + '>' + esc(status) + '</option>'; }).join("") + '</select>');
+    openModal(editingPurchase ? "Editar compra " + editingPurchase.number : "Registrar una compra", editingPurchase ? "Corrige los datos y revisa el efecto sobre las existencias." : "Registra lo recibido y actualiza las existencias.", modalForm("purchase-form", fields, "Esta acción crea o actualiza un registro local de compra. Revisa la factura original con tu contador.", editingPurchase ? "Guardar cambios" : "Guardar compra"));
+    var form = document.getElementById("purchase-form");
+    form.addEventListener("change", updatePurchasePreview);
+    form.addEventListener("input", updatePurchasePreview);
+    updatePurchaseLineRemoveButtons();
+    updatePurchasePreview();
   }
 
-  function openContactModal() {
-    var fields = formField("Nombre o razón social", "contact-name", '<input name="name" id="contact-name" required placeholder="Ej. Distribuciones del Norte" maxlength="100">', true) +
-      formField("Tipo de contacto", "contact-kind", '<select name="role" id="contact-kind"><option>Cliente</option><option>Proveedor</option><option>Cliente y proveedor</option></select>') +
-      formField("Identificación (NIT o cédula)", "contact-idnumber", '<input name="idNumber" id="contact-idnumber" placeholder="Ej. 900.123.456-7">') +
-      formField("Correo electrónico", "contact-email", '<input name="email" id="contact-email" type="email" placeholder="correo@empresa.co">') +
-      formField("Teléfono", "contact-phone", '<input name="phone" id="contact-phone" type="tel" placeholder="300 000 0000">');
-    openModal("Nuevo contacto", "Guarda los datos que necesitas para vender o comprar.", modalForm("contact-form", fields, "Puedes completar los datos tributarios más adelante.", "Guardar contacto"));
+  function purchaseLineHtml(existingLine) {
+    var options = state.inventory.filter(function (item) { return item.type === "Materia prima" || item.type === "Insumo"; }).map(function (item) {
+      return '<option value="' + esc(item.id) + '"' + (existingLine && existingLine.sku === item.sku ? " selected" : "") + '>' + esc(item.name) + ' · ' + num(item.stock, 1) + " " + esc(item.unit) + '</option>';
+    }).join("");
+    return '<div class="document-line purchase-line"><label><span>Producto o material</span><select data-purchase-product required><option value="">Elige un material</option>' + options + '</select></label><label><span>Cantidad</span><input data-purchase-quantity type="number" min="0.001" step="any" value="' + (existingLine ? esc(existingLine.quantity) : "10") + '" required></label><label><span>Costo total (COP)</span><input data-purchase-line-total type="number" min="0" step="100" value="' + (existingLine ? esc(existingLine.total) : "100000") + '" required></label><button type="button" class="button-quiet button-quiet-danger document-remove-line" data-action="purchase-remove-line" aria-label="Quitar producto">Quitar</button></div>';
+  }
+
+  function updatePurchaseLineRemoveButtons() {
+    var rows = Array.prototype.slice.call(document.querySelectorAll("#purchase-lines .purchase-line"));
+    rows.forEach(function (row) { var button = row.querySelector(".document-remove-line"); if (button) button.classList.toggle("hidden", rows.length < 2); });
+  }
+
+  function addPurchaseLine() {
+    var container = document.getElementById("purchase-lines");
+    if (!container) return;
+    if (container.querySelectorAll(".purchase-line").length >= 30) return toast("La compra tiene muchos productos", "Puedes agregar hasta 30 productos en una compra.");
+    container.insertAdjacentHTML("beforeend", purchaseLineHtml({ quantity: 1, total: 0 }));
+    updatePurchaseLineRemoveButtons();
+    updatePurchasePreview();
+  }
+
+  function removePurchaseLine(button) {
+    var row = button.closest(".purchase-line");
+    if (!row || document.querySelectorAll("#purchase-lines .purchase-line").length < 2) return;
+    row.remove();
+    updatePurchaseLineRemoveButtons();
+    updatePurchasePreview();
+  }
+
+  function updatePurchasePreview() {
+    var form = document.getElementById("purchase-form");
+    var preview = document.getElementById("purchase-preview");
+    if (!form || !preview) return;
+    var total = Array.prototype.slice.call(form.querySelectorAll("[data-purchase-line-total]")).reduce(function (sum, input) { return sum + (Number(input.value) || 0); }, 0);
+    preview.textContent = "Total de compra: " + money(total);
+  }
+
+  function syncContactNameRequirement(form) {
+    if (!form) return;
+    var nameInput = form.elements.name;
+    var hint = document.getElementById("contact-name-hint");
+    var mayOmitName = form.elements.role.value === "Cliente" && form.elements.ordinaryCustomer.checked;
+    nameInput.required = !mayOmitName;
+    nameInput.placeholder = mayOmitName ? "Opcional para cliente de mostrador" : "Ej. Distribuciones del Norte";
+    if (hint) hint.textContent = mayOmitName ? "Puedes dejarlo vacío para un cliente de mostrador. Si vas a guardar identificación, correo o teléfono, escribe un nombre." : "Escribe el nombre o razón social del contacto.";
+  }
+
+  function openContactModal(contactId) {
+    var contact = contactId ? state.contacts.find(function (item) { return item.id === contactId; }) : null;
+    if (contactId && !contact) return toast("No encontramos ese contacto", "Actualiza la lista e inténtalo de nuevo.");
+    var isOrdinary = contact ? contact.ordinaryCustomer === true : true;
+    var selectedRole = contact ? (contact.role === "Cliente · Proveedor" ? "Cliente y proveedor" : contact.role) : "Cliente";
+    var fields = (contact ? '<input type="hidden" name="contactId" value="' + esc(contact.id) + '">' : "") +
+      formField("Nombre o razón social", "contact-name", '<input name="name" id="contact-name"' + (selectedRole === "Cliente" && isOrdinary ? "" : " required") + ' value="' + esc(contact ? contact.name || "" : "") + '" placeholder="' + (selectedRole === "Cliente" && isOrdinary ? "Opcional para cliente de mostrador" : "Ej. Distribuciones del Norte") + '" maxlength="100"><small class="field-hint" id="contact-name-hint">' + (selectedRole === "Cliente" && isOrdinary ? "Puedes dejarlo vacío para un cliente de mostrador. Si vas a guardar identificación, correo o teléfono, escribe un nombre." : "Escribe el nombre o razón social del contacto.") + '</small>', true) +
+      formField("Tipo de contacto", "contact-kind", '<select name="role" id="contact-kind"><option' + (selectedRole === "Cliente" ? " selected" : "") + '>Cliente</option><option' + (selectedRole === "Proveedor" ? " selected" : "") + '>Proveedor</option><option' + (selectedRole === "Cliente y proveedor" ? " selected" : "") + '>Cliente y proveedor</option></select>') +
+      '<div class="field full' + (selectedRole.indexOf("Cliente") >= 0 ? "" : " hidden") + '" id="contact-ordinary-field" data-customer-visible="' + (selectedRole.indexOf("Cliente") >= 0) + '"><label class="contact-checkbox" for="contact-ordinary"><input name="ordinaryCustomer" id="contact-ordinary" type="checkbox"' + (isOrdinary ? " checked" : "") + '> Identificar como cliente ordinario</label><small class="field-hint">Es una clasificación comercial interna, no define impuestos. Si es cliente de mostrador puedes omitir el nombre.</small></div>' +
+      formField("Identificación (NIT o cédula)", "contact-idnumber", '<input name="idNumber" id="contact-idnumber" value="' + esc(contact ? contact.idNumber || "" : "") + '" placeholder="Ej. 900.123.456-7">') +
+      formField("Correo electrónico", "contact-email", '<input name="email" id="contact-email" type="email" value="' + esc(contact ? contact.email || "" : "") + '" placeholder="correo@empresa.co">') +
+      formField("Teléfono", "contact-phone", '<input name="phone" id="contact-phone" type="tel" value="' + esc(contact ? contact.phone || "" : "") + '" placeholder="300 000 0000">');
+    openModal(contact ? "Editar contacto" : "Nuevo contacto", contact ? "Actualiza los datos de este cliente o proveedor." : "Guarda los datos que necesitas para vender o comprar.", modalForm("contact-form", fields, "Los datos tributarios y su tratamiento deben revisarse con tu contador.", contact ? "Guardar cambios" : "Guardar contacto"));
+    syncContactNameRequirement(document.getElementById("contact-form"));
   }
 
   function openSetupModal() {
@@ -1508,7 +2080,7 @@ window.Pyme360App = (function () {
       formField("Ciudad principal", "setup-city", '<input name="city" id="setup-city" value="' + esc(state.city || "") + '" placeholder="Ej. Bogotá">') +
       formField("Actividad", "setup-activity", '<select name="activity" id="setup-activity"><option>Alimentos y bebidas</option><option>Textiles y confección</option><option>Metalmecánica</option><option>Cosmética y cuidado personal</option><option>Otra manufactura</option></select>') +
       '<div class="field full"><label>Primeros pasos</label><div class="form-note" style="margin:0">1. Datos de empresa · 2. Sede y bodega · 3. Productos e inventario · 4. Impuestos y facturación.</div></div>';
-    openModal("Configura tu negocio", "Empecemos con lo básico. Puedes completar el resto después.", modalForm("setup-form", fields, "Los datos de esta pantalla solo se guardan en este navegador de demostración.", "Guardar y continuar"));
+    openModal("Configura tu negocio", "Empecemos con lo básico. Puedes completar el resto después.", modalForm("setup-form", fields, "Los datos se guardan en SQLite en este computador.", "Guardar y continuar"));
   }
 
   function openAdjustmentModal() {
@@ -1519,57 +2091,136 @@ window.Pyme360App = (function () {
     openModal("Ajustar existencias", "Registra una diferencia de inventario con su motivo.", modalForm("adjust-form", fields, "El ajuste quedará registrado en la actividad reciente.", "Guardar ajuste"));
   }
 
-  function openProductModal() {
-    var materials = productOptions(["Materia prima", "Insumo"]);
-    var fields = formField("Nombre del producto o material", "product-name", '<input name="name" id="product-name" required maxlength="100" placeholder="Ej. Harina de maíz">', true) +
+  function openProductModal(productId) {
+    var editingProduct = productId ? state.inventory.find(function (item) { return item.id === productId; }) : null;
+    if (productId && !editingProduct) return toast("No encontramos ese producto", "Actualiza la lista e inténtalo de nuevo.");
+    var hasRecipeMaterials = state.inventory.some(function (item) { return item.type === "Materia prima" || item.type === "Insumo"; });
+    var identityFields = editingProduct ? '<input type="hidden" name="productId" value="' + esc(editingProduct.id) + '"><div class="field"><label>Tipo</label><div class="form-note" style="margin:0">' + esc(editingProduct.type) + '</div><small class="field-hint">No se cambia para conservar el historial de inventario.</small></div><div class="field"><label>Unidad</label><div class="form-note" style="margin:0">' + esc(editingProduct.unit) + '</div></div><div class="field full"><div class="form-note" style="margin:0">Existencia actual: <strong>' + num(editingProduct.stock, 1) + ' ' + esc(editingProduct.unit) + '</strong>. Para ajustarla usa “Ajustar stock” en Inventario.</div></div>' :
       formField("Tipo", "product-type", '<select name="type" id="product-type"><option>Materia prima</option><option>Insumo</option><option>Producto terminado</option></select>') +
       formField("Unidad", "product-unit", '<select name="unit" id="product-unit"><option>kg</option><option>unidad</option><option>litro</option><option>m³</option><option>caja</option><option>metro</option></select>') +
-      formField("Existencia inicial", "product-stock", '<input name="stock" id="product-stock" type="number" min="0" step="0.1" value="0">') +
-      formField("Avisarme al llegar a", "product-min", '<input name="min" id="product-min" type="number" min="0" step="0.1" value="0">') +
-      formField("Costo por unidad (COP)", "product-cost", '<input name="cost" id="product-cost" type="number" min="0" step="100" value="0">') +
-      formField("Precio de venta (COP)", "product-price", '<input name="price" id="product-price" type="number" min="0" step="100" value="0">') +
-      formField("IVA", "product-tax-type", '<select name="taxType" id="product-tax-type"><option>Gravado</option><option>Excluido</option><option>Exento</option></select>') +
-      formField("Tarifa IVA (%)", "product-tax-rate", '<input name="taxRate" id="product-tax-rate" type="number" min="0" max="100" step="1" value="19">') +
-      formField("Material por unidad (solo producto terminado)", "product-material", '<select name="material" id="product-material"><option value="">Sin receta por ahora</option>' + materials + '</select>', true) +
-      formField("Cantidad de ese material", "product-material-amount", '<input name="materialAmount" id="product-material-amount" type="number" min="0.001" step="0.001" placeholder="Ej. 0,25">');
-    openModal("Agregar producto", "Registra tus propios productos, materias primas o insumos.", modalForm("product-form", fields, "Si vas a fabricar este producto, agrega primero sus materiales. Puedes dejar la receta vacía y completarla más adelante.", "Guardar producto"));
+      formField("Existencia inicial", "product-stock", '<input name="stock" id="product-stock" type="number" min="0" step="0.1" value="0">');
+    var type = editingProduct ? editingProduct.type : "Materia prima";
+    var recipeLines = editingProduct && editingProduct.inputs && editingProduct.inputs.length ? editingProduct.inputs.map(function (line) { return recipeLineHtml(line); }).join("") : recipeLineHtml();
+    var recipeField = '<section class="field full recipe-builder' + (type === "Producto terminado" ? "" : " hidden") + '" id="recipe-builder"><div class="recipe-builder-heading"><div><label>Receta para fabricar 1 unidad</label><p>Elige cada material y cuánto usas. Ejemplo: 1 camiseta = 0,5 m de tela + 2 botones.</p></div><button type="button" class="button button-secondary recipe-add-button" data-action="recipe-add-line"' + (hasRecipeMaterials ? "" : " disabled") + '>＋ Añadir material</button></div>' + (hasRecipeMaterials ? '<div class="recipe-lines" id="recipe-lines">' + recipeLines + '</div>' : '<p class="recipe-empty-note">Primero agrega materias primas o insumos en <strong>Inventario</strong>. Después podrás seleccionarlos aquí.</p>') + '<small class="field-hint">Usa la unidad de cada material. Si todavía no tienes la receta, puedes guardar el producto y completarla después.</small></section>';
+    var fields = (editingProduct ? '<input type="hidden" name="type" value="' + esc(editingProduct.type) + '"><input type="hidden" name="unit" value="' + esc(editingProduct.unit) + '">' : '') +
+      formField("Nombre del producto o material", "product-name", '<input name="name" id="product-name" required maxlength="100" value="' + esc(editingProduct ? editingProduct.name : "") + '" placeholder="Ej. Harina de maíz">', true) + identityFields +
+      formField("Avisarme al llegar a", "product-min", '<input name="min" id="product-min" type="number" min="0" step="0.1" value="' + (editingProduct ? Number(editingProduct.min) || 0 : 0) + '">') +
+      formField("Costo por unidad (COP)", "product-cost", '<input name="cost" id="product-cost" type="number" min="0" step="100" value="' + (editingProduct ? Number(editingProduct.cost) || 0 : 0) + '">') +
+      formField("Precio de venta (COP)", "product-price", '<input name="price" id="product-price" type="number" min="0" step="100" value="' + (editingProduct ? Number(editingProduct.price) || 0 : 0) + '">') +
+      formField("IVA", "product-tax-type", '<select name="taxType" id="product-tax-type"><option' + (!editingProduct || editingProduct.taxType === "Gravado" ? " selected" : "") + '>Gravado</option><option' + (editingProduct && editingProduct.taxType === "Excluido" ? " selected" : "") + '>Excluido</option><option' + (editingProduct && editingProduct.taxType === "Exento" ? " selected" : "") + '>Exento</option></select>') +
+      formField("Tarifa IVA (%)", "product-tax-rate", '<input name="taxRate" id="product-tax-rate" type="number" min="0" max="100" step="1" value="' + (editingProduct ? Number(editingProduct.taxRate) || 0 : 19) + '">') + recipeField;
+    openModal(editingProduct ? "Editar producto" : "Agregar producto", editingProduct ? "Actualiza su ficha, impuestos o receta." : "Registra tus productos, materias primas o insumos.", modalForm("product-form", fields, editingProduct ? "El código, tipo, unidad y existencia se conservan. Usa Ajustar stock para cambiar existencias." : "Puedes guardar un producto terminado sin receta y completarla después.", editingProduct ? "Guardar cambios" : "Guardar producto"));
+    var form = document.getElementById("product-form");
+    form.addEventListener("change", function (event) {
+      var recipeBuilder = document.getElementById("recipe-builder");
+      if (event.target.id === "product-type" && recipeBuilder) recipeBuilder.classList.toggle("hidden", event.target.value !== "Producto terminado");
+      if (event.target.matches(".recipe-material-select")) updateRecipeUnit(event.target);
+    });
+    Array.prototype.slice.call(form.querySelectorAll(".recipe-material-select")).forEach(function (select) { updateRecipeUnit(select); });
+    updateRecipeRemoveButtons();
   }
 
   function openPaymentModal() {
-    var unpaid = state.sales.filter(function (sale) { return sale.status === "Pendiente de pago"; });
-    if (!unpaid.length) return toast("No tienes facturas pendientes", "Cuando registres una venta a crédito, podrás asociar el pago aquí.");
-    var options = unpaid.map(function (sale) { return '<option value="' + esc(sale.id) + '">' + esc(sale.number) + " · " + esc(sale.customer) + " · " + money(sale.total) + '</option>'; }).join("");
+    var unpaid = state.sales.filter(function (sale) { return saleOutstanding(sale) > 0; });
+    if (!unpaid.length) return toast("No tienes saldos pendientes", "Cuando registres una venta a crédito, podrás asociar pagos aquí.");
+    var options = unpaid.map(function (sale, index) { return '<option value="' + esc(sale.id) + '"' + (index === 0 ? " selected" : "") + '>' + esc(sale.number) + " · " + esc(sale.customer) + " · Falta " + money(saleOutstanding(sale)) + '</option>'; }).join("");
     var fields = formField("Factura", "payment-sale", '<select name="sale" id="payment-sale">' + options + '</select>', true) +
+      formField("Valor recibido (COP)", "payment-amount", '<input name="amount" id="payment-amount" type="number" min="0.01" step="0.01" max="' + saleOutstanding(unpaid[0]) + '" value="' + saleOutstanding(unpaid[0]) + '" required><small class="field-hint" id="payment-balance-hint">Saldo pendiente: ' + money(saleOutstanding(unpaid[0])) + '</small>', true) +
       formField("Fecha de pago", "payment-date", '<input name="date" id="payment-date" type="date" value="' + today() + '">') +
       formField("Medio de pago", "payment-method", '<select name="method" id="payment-method"><option>Transferencia</option><option>Efectivo</option><option>Consignación</option><option>Otro</option></select>');
-    openModal("Registrar un pago", "Asocia el pago recibido a una factura pendiente.", modalForm("payment-form", fields, "El pago quedará asociado al registro de venta.", "Confirmar pago"));
+    openModal("Registrar un pago", "Registra un abono o el pago completo de una factura.", modalForm("payment-form", fields, "Puedes registrar varios abonos. El saldo se actualizará automáticamente.", "Guardar pago"));
+  }
+
+  function updatePaymentBalance() {
+    var form = document.getElementById("payment-form");
+    if (!form) return;
+    var sale = state.sales.find(function (item) { return item.id === form.elements.sale.value; });
+    if (!sale) return;
+    var balance = saleOutstanding(sale);
+    var amount = form.elements.amount;
+    if (amount) { amount.max = String(balance); amount.value = String(balance); }
+    var hint = document.getElementById("payment-balance-hint");
+    if (hint) hint.textContent = "Saldo pendiente: " + money(balance);
   }
 
   /* Guardado de operaciones */
   function submitSale(form) {
-    var product = state.inventory.find(function (item) { return item.id === form.elements.product.value; });
     var customer = state.contacts.find(function (item) { return item.id === form.elements.customer.value; });
-    var quantity = Number(form.elements.quantity.value);
     var discount = Number(form.elements.discount.value) || 0;
-    if (!product || !customer) return toast("Revisa los datos", "Elige un cliente y un producto.");
-    if (quantity > product.stock) return toast("No hay suficientes existencias", "Tienes " + num(product.stock) + " " + product.unit + " disponibles.");
-    var subtotal = Math.max(0, product.price * quantity - discount);
-    var rate = product.taxType === "Gravado" ? Number(product.taxRate) || 0 : 0;
+    var invoiceFollowUpStatus = form.elements.invoiceFollowUpStatus.value;
+    var externalInvoiceNumber = form.elements.externalInvoiceNumber.value.trim();
+    var externalInvoiceDate = form.elements.externalInvoiceDate.value;
+    if (!customer) return toast("Elige un cliente", "Selecciona a quién le vendiste.");
+    if (["Por revisar", "Registrada por fuera de Pyme360", "No aplica, según revisión del usuario"].indexOf(invoiceFollowUpStatus) < 0) return toast("Revisa el seguimiento de factura", "Elige una de las opciones disponibles.");
+    var saleId = form.elements.saleId ? form.elements.saleId.value : "";
+    var existing = saleId ? state.sales.find(function (item) { return item.id === saleId; }) : null;
+    if (saleId && !existing) return toast("No encontramos esa venta", "Actualiza la lista e inténtalo de nuevo.");
+    if (!Number.isFinite(discount) || discount < 0) return toast("Revisa el descuento", "El descuento debe ser cero o mayor.");
+    var lines = [], newQuantities = {}, invalidLine = false;
+    Array.prototype.slice.call(form.querySelectorAll(".sale-line")).forEach(function (row) {
+      var product = state.inventory.find(function (item) { return item.id === row.querySelector("[data-sale-product]").value; });
+      var quantity = Number(row.querySelector("[data-sale-quantity]").value);
+      if (!product || product.type !== "Producto terminado" || !Number.isFinite(quantity) || quantity <= 0) { invalidLine = true; return; }
+      var unitPrice = Number(row.querySelector("[data-sale-unit-price]").value);
+      var rate = Number(row.querySelector("[data-sale-tax-rate]").value);
+      if (!Number.isFinite(unitPrice) || unitPrice < 0 || !Number.isFinite(rate) || rate < 0 || rate > 100) { invalidLine = true; return; }
+      var line = { sku: product.sku, quantity: quantity, unitPrice: unitPrice, taxRate: rate };
+      var existingLine = lines.find(function (entry) { return entry.sku === product.sku; });
+      if (existingLine && (existingLine.unitPrice !== line.unitPrice || existingLine.taxRate !== line.taxRate)) { invalidLine = true; return; }
+      if (existingLine) existingLine.quantity += quantity;
+      else lines.push(line);
+      newQuantities[product.sku] = (newQuantities[product.sku] || 0) + quantity;
+    });
+    if (invalidLine || !lines.length) return toast("Revisa los productos", "Cada renglón necesita producto, cantidad y precio válidos. Si repites un producto, usa el mismo precio e IVA.");
+    var oldLines = existing ? (existing.lines || []) : [];
+    var previousInventoryApplied = !!(existing && existing.inventoryApplied !== false);
+    var oldQuantities = {};
+    oldLines.forEach(function (line) { oldQuantities[line.sku] = (oldQuantities[line.sku] || 0) + (Number(line.quantity) || 0); });
+    if (previousInventoryApplied && Object.keys(oldQuantities).some(function (sku) { return !state.inventory.some(function (item) { return item.sku === sku; }); })) return toast("No se puede actualizar el inventario", "No encontramos uno de los productos originales de esta venta.");
+    var shortProduct = Object.keys(newQuantities).map(function (sku) { return state.inventory.find(function (item) { return item.sku === sku; }); }).find(function (product) {
+      var available = (Number(product.stock) || 0) + (previousInventoryApplied ? (oldQuantities[product.sku] || 0) : 0);
+      return newQuantities[product.sku] > available;
+    });
+    if (shortProduct) {
+      var availableStock = (Number(shortProduct.stock) || 0) + (previousInventoryApplied ? (oldQuantities[shortProduct.sku] || 0) : 0);
+      return toast("No hay suficientes existencias", "De " + shortProduct.name + " hay " + num(availableStock, 1) + " " + shortProduct.unit + " disponibles para esta venta.");
+    }
+    var subtotal = lines.reduce(function (sum, line) { return sum + line.unitPrice * line.quantity; }, 0);
+    var taxBeforeDiscount = lines.reduce(function (sum, line) { return sum + line.unitPrice * line.quantity * line.taxRate / 100; }, 0);
+    var netSubtotal = Math.max(0, subtotal - discount);
+    var taxTotal = subtotal ? taxBeforeDiscount * netSubtotal / subtotal : 0;
+    var total = Math.round(netSubtotal + taxTotal);
+    var payments = existing && Array.isArray(existing.payments) ? existing.payments.slice() : [];
+    if (existing && !payments.length && existing.status === "Pagada") payments.push({ id: "legacy-" + existing.id, date: existing.paidDate || existing.date || today(), amount: Number(existing.total) || 0, method: existing.method || existing.payment || "Pago registrado", legacy: true });
+    if (!existing && form.elements.payment.value === "Contado") payments.push({ id: "pay" + Date.now(), date: form.elements.date.value || today(), amount: total, method: "Pago al contado" });
+    if (payments.reduce(function (sum, item) { return sum + (Number(item.amount) || 0); }, 0) > total) return toast("El nuevo total es menor que los pagos recibidos", "Ajusta los pagos registrados o conserva un total igual o mayor al valor ya abonado.");
     var maxInvoice = state.sales.reduce(function (max, item) { var value = Number(String(item.number).replace(/\D/g, "")); return Math.max(max, value || 0); }, 0);
-    var sale = {
-      id: "v" + Date.now(), number: "FV-" + String(maxInvoice + 1).padStart(4, "0"),
-      customer: customer.name, date: form.elements.date.value || today(),
-      total: Math.round(subtotal * (1 + rate / 100)), taxRate: rate,
-      status: form.elements.payment.value === "Contado" ? "Pagada" : "Pendiente de pago",
-      payment: form.elements.payment.value, lines: [{ sku: product.sku, quantity: quantity }], demo: true
-    };
-    product.stock -= quantity;
-    state.sales.unshift(sale);
-    addActivity("Venta registrada", sale.number + " · " + customer.name, "↗");
+    var sale = Object.assign({}, existing || {}, {
+      id: existing ? existing.id : "v" + Date.now(),
+      number: existing ? existing.number : "FV-" + String(maxInvoice + 1).padStart(4, "0"),
+      customer: customer.name, customerId: customer.id, date: form.elements.date.value || today(),
+      subtotal: subtotal, total: total, taxRate: subtotal ? taxBeforeDiscount / subtotal * 100 : 0, discount: discount,
+      status: "Pendiente de pago", payment: form.elements.payment.value, lines: lines, payments: payments, demo: true, inventoryApplied: true,
+      invoiceFollowUpStatus: invoiceFollowUpStatus, externalInvoiceNumber: externalInvoiceNumber, externalInvoiceDate: externalInvoiceDate
+    });
+    refreshSaleStatus(sale);
+    if (previousInventoryApplied) Object.keys(oldQuantities).forEach(function (sku) {
+      var previousProduct = state.inventory.find(function (item) { return item.sku === sku; });
+      previousProduct.stock += oldQuantities[sku];
+    });
+    Object.keys(newQuantities).forEach(function (sku) {
+      var product = state.inventory.find(function (item) { return item.sku === sku; });
+      product.stock -= newQuantities[sku];
+    });
+    if (existing) {
+      var saleIndex = state.sales.findIndex(function (item) { return item.id === existing.id; });
+      state.sales[saleIndex] = sale;
+    } else state.sales.unshift(sale);
+    addActivity(existing ? "Venta actualizada" : "Venta registrada", sale.number + " · " + customer.name, "↗");
     saveState();
     closeModal();
     render();
-    toast("Venta guardada", sale.number + " · No se transmitió a la DIAN.");
+    toast(existing ? "Venta actualizada" : "Venta guardada", sale.number + " · No se transmitió a la DIAN.");
   }
 
   function submitProduction(form) {
@@ -1577,31 +2228,49 @@ window.Pyme360App = (function () {
     var quantity = Number(form.elements.quantity.value);
     var waste = Number(form.elements.waste.value) || 0;
     if (!product) return toast("Elige un producto", "Selecciona qué vas a fabricar.");
-    var required = (product.inputs || []).map(function (input) {
+    if (!Number.isFinite(quantity) || quantity < 1 || !Number.isFinite(waste) || waste < 0) return toast("Revisa las cantidades", "La cantidad debe ser mayor a cero y el desperdicio no puede ser negativo.");
+    var orderId = form.elements.productionId ? form.elements.productionId.value : "";
+    var existing = orderId ? state.production.find(function (item) { return item.id === orderId; }) : null;
+    if (orderId && (!existing || existing.status !== "En proceso" || existing.inventoryApplied === false)) return toast("No se puede editar esta orden", "Solo puedes cambiar órdenes locales que siguen en proceso.");
+    var required = [];
+    var invalidRecipe = false;
+    (product.inputs || []).forEach(function (input) {
       var material = state.inventory.find(function (item) { return item.sku === input.sku; });
-      return { item: material, amount: input.amount * quantity };
+      var amount = (Number(input.amount) || 0) * quantity;
+      if (!material || !Number.isFinite(amount) || amount <= 0) { invalidRecipe = true; return; }
+      var line = required.find(function (entry) { return entry.item.id === material.id; });
+      if (line) line.amount += amount; else required.push({ item: material, amount: amount });
     });
-    var short = required.find(function (entry) { return !entry.item || entry.item.stock < entry.amount; });
-    if (short) return toast("Faltan materiales", short.item ? "No alcanza " + short.item.name + " para esta orden." : "Revisa la receta del producto.");
-    required.forEach(function (entry) { entry.item.stock -= entry.amount; });
-    var order = {
-      id: "pr" + Date.now(), number: "OP-" + String(82 + state.production.length).padStart(4, "0"),
-      product: product.name, productId: product.id, quantity: quantity, date: today(),
-      status: "En proceso", wasteKg: waste, inputConsumption: required.map(function (entry) {
-        return { sku: entry.item.sku, quantity: entry.amount };
-      })
+    if (invalidRecipe) return toast("Revisa la receta", "Hay un material faltante o una cantidad inválida en la receta del producto.");
+    if (!required.length) return toast("Este producto no tiene receta", "Edita el producto y agrega los materiales antes de crear la orden.");
+    var oldConsumption = existing ? (existing.inputConsumption || []) : [];
+    var availableFor = function (material) {
+      var old = oldConsumption.filter(function (line) { return line.sku === material.sku; }).reduce(function (sum, line) { return sum + (Number(line.quantity) || 0); }, 0);
+      return material.stock + old;
     };
-    state.production.unshift(order);
-    addActivity("Orden de producción creada", order.number + " · " + quantity + " unidades", "⚙");
+    if (oldConsumption.some(function (line) { return !state.inventory.some(function (item) { return item.sku === line.sku; }); })) return toast("No se puede ajustar esta orden", "No encontramos todos los materiales que se habían reservado.");
+    var short = required.find(function (entry) { return !entry.item || availableFor(entry.item) < entry.amount; });
+    if (short) return toast("Faltan materiales", short.item ? "No alcanza " + short.item.name + " para esta orden." : "Revisa la receta del producto.");
+    if (existing) oldConsumption.forEach(function (line) {
+      var material = state.inventory.find(function (item) { return item.sku === line.sku; });
+      if (material) material.stock += Number(line.quantity) || 0;
+    });
+    required.forEach(function (entry) { entry.item.stock -= entry.amount; });
+    var order = existing || { id: "pr" + Date.now(), number: "OP-" + String(82 + state.production.length).padStart(4, "0"), date: today(), status: "En proceso", inventoryApplied: true };
+    order.product = product.name; order.productId = product.id; order.quantity = quantity; order.wasteKg = waste;
+    order.inputConsumption = required.map(function (entry) { return { sku: entry.item.sku, quantity: entry.amount }; });
+    if (!existing) state.production.unshift(order);
+    addActivity(existing ? "Orden de producción actualizada" : "Orden de producción creada", order.number + " · " + quantity + " unidades", "⚙");
     saveState();
     closeModal();
     render();
-    toast("Orden creada", order.number + " · Los materiales se descontaron del inventario.");
+    toast(existing ? "Orden actualizada" : "Orden creada", order.number + " · Las existencias de materiales quedaron ajustadas.");
   }
 
   function completeProduction(id) {
     var order = state.production.find(function (item) { return item.id === id; });
     if (!order || order.status !== "En proceso") return;
+    if (order.inventoryApplied === false) return toast("Orden importada", "Este registro no reservó materiales en Pyme360. Revísalo en el archivo original antes de cerrar producción.");
     var product = state.inventory.find(function (item) { return item.id === order.productId; }) ||
       state.inventory.find(function (item) { return item.name === order.product; });
     if (!product) return toast("No se encontró el producto terminado");
@@ -1651,33 +2320,98 @@ window.Pyme360App = (function () {
 
   function submitPurchase(form) {
     var supplier = state.contacts.find(function (item) { return item.id === form.elements.supplier.value; });
-    var product = state.inventory.find(function (item) { return item.id === form.elements.product.value; });
-    var quantity = Number(form.elements.quantity.value);
-    if (!supplier || !product) return toast("Revisa los datos", "Selecciona un proveedor y un producto.");
+    if (!supplier) return toast("Elige un proveedor", "Selecciona quién te vendió los materiales.");
     var status = form.elements.status.value;
-    if (status === "Recibida") product.stock += quantity;
-    var purchase = { id: "co" + Date.now(), number: "OC-" + String(239 + state.purchases.length).padStart(4, "0"), supplier: supplier.name, date: today(), total: Number(form.elements.total.value) || 0, status: status, detail: product.name + " · " + num(quantity, 1) + " " + product.unit, productSku: product.sku, quantity: quantity };
-    state.purchases.unshift(purchase);
-    addActivity(status === "Recibida" ? "Compra recibida" : "Compra registrada", purchase.number + " · " + product.name, "↙");
+    var purchaseId = form.elements.purchaseId ? form.elements.purchaseId.value : "";
+    var existing = purchaseId ? state.purchases.find(function (item) { return item.id === purchaseId; }) : null;
+    if (purchaseId && !existing) return toast("No encontramos esa compra", "Actualiza la lista e inténtalo de nuevo.");
+    var lines = [], newQuantities = {}, productsBySku = {};
+    var invalidLine = false;
+    Array.prototype.slice.call(form.querySelectorAll(".purchase-line")).forEach(function (row) {
+      var product = state.inventory.find(function (item) { return item.id === row.querySelector("[data-purchase-product]").value; });
+      var quantity = Number(row.querySelector("[data-purchase-quantity]").value);
+      var lineTotal = Number(row.querySelector("[data-purchase-line-total]").value);
+      if (!product || (product.type !== "Materia prima" && product.type !== "Insumo") || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(lineTotal) || lineTotal < 0) { invalidLine = true; return; }
+      productsBySku[product.sku] = product;
+      var line = lines.find(function (entry) { return entry.sku === product.sku; });
+      if (line) { line.quantity += quantity; line.total += lineTotal; }
+      else lines.push({ sku: product.sku, quantity: quantity, total: lineTotal });
+      newQuantities[product.sku] = (newQuantities[product.sku] || 0) + quantity;
+    });
+    if (invalidLine || !lines.length) return toast("Completa los productos", "En cada renglón elige un material, escribe una cantidad y registra su costo total.");
+    var oldLines = existing ? purchaseLines(existing) : [];
+    var oldQuantities = {};
+    oldLines.forEach(function (line) { oldQuantities[line.sku] = (oldQuantities[line.sku] || 0) + (Number(line.quantity) || 0); });
+    var previousApplied = !!(existing && existing.inventoryApplied !== false && existing.status !== "Por recibir");
+    var statusReceived = status !== "Por recibir";
+    var shouldApply = existing ? (previousApplied || (existing.status === "Por recibir" && statusReceived)) : statusReceived;
+    var applyNewMovement = shouldApply && statusReceived;
+    var oldSkus = Object.keys(oldQuantities).sort(), newSkus = Object.keys(newQuantities).sort();
+    var sameMovement = oldSkus.length === newSkus.length && oldSkus.every(function (sku, index) { return sku === newSkus[index] && Number(oldQuantities[sku]) === Number(newQuantities[sku]); });
+    var movementChanged = !existing || previousApplied !== applyNewMovement || (previousApplied && applyNewMovement && !sameMovement);
+    if (previousApplied && movementChanged) {
+      var cannotReverse = oldSkus.find(function (sku) {
+        var oldProduct = state.inventory.find(function (item) { return item.sku === sku; });
+        return !oldProduct || Number(oldProduct.stock) < Number(oldQuantities[sku]);
+      });
+      if (cannotReverse) return toast("No se puede corregir esta compra", "Parte de lo recibido de " + cannotReverse + " ya se usó. Revisa los movimientos antes de cambiarla.");
+    }
+    if (previousApplied && movementChanged) oldSkus.forEach(function (sku) {
+      var oldProduct = state.inventory.find(function (item) { return item.sku === sku; });
+      oldProduct.stock -= oldQuantities[sku];
+    });
+    if (applyNewMovement && movementChanged) newSkus.forEach(function (sku) { productsBySku[sku].stock += newQuantities[sku]; });
+    var firstLine = lines[0];
+    var total = lines.reduce(function (sum, line) { return sum + line.total; }, 0);
+    var detail = lines.map(function (line) { var product = state.inventory.find(function (item) { return item.sku === line.sku; }); return (product ? product.name : line.sku) + " · " + num(line.quantity, 2) + " " + (product ? product.unit : ""); }).join(", ");
+    var purchase = Object.assign({}, existing || {}, {
+      id: existing ? existing.id : "co" + Date.now(),
+      number: existing ? existing.number : "OC-" + String(239 + state.purchases.length).padStart(4, "0"),
+      supplier: supplier.name, supplierId: supplier.id, date: form.elements.date.value || today(),
+      total: total, status: status, detail: detail,
+      productSku: firstLine.sku, quantity: firstLine.quantity, lines: lines, inventoryApplied: applyNewMovement
+    });
+    if (existing) state.purchases[state.purchases.findIndex(function (item) { return item.id === existing.id; })] = purchase;
+    else state.purchases.unshift(purchase);
+    addActivity(existing ? "Compra actualizada" : (statusReceived ? "Compra recibida" : "Compra registrada"), purchase.number + " · " + detail, "↙");
     saveState();
     closeModal();
     render();
-    toast("Compra guardada", status === "Recibida" ? "Las existencias se actualizaron." : "Quedó pendiente de recibir.");
+    toast(existing ? "Compra actualizada" : "Compra guardada", statusReceived ? (purchase.inventoryApplied ? "Las existencias quedaron actualizadas." : "El registro se actualizó; por ser importado, no se modificó el inventario.") : "Quedó pendiente de recibir.");
   }
 
   function submitContact(form) {
     var name = form.elements.name.value.trim();
-    if (!name) return toast("Escribe el nombre del contacto");
-    state.contacts.unshift({
-      id: "c" + Date.now(), name: name,
-      role: form.elements.role.value === "Cliente y proveedor" ? "Cliente · Proveedor" : form.elements.role.value,
+    var selectedRole = form.elements.role.value;
+    var hasCustomerRole = selectedRole.indexOf("Cliente") >= 0;
+    var ordinaryCustomer = hasCustomerRole && form.elements.ordinaryCustomer.checked;
+    var isWalkIn = selectedRole === "Cliente" && ordinaryCustomer && !name;
+    if (!name && !isWalkIn) return toast("Escribe el nombre del contacto", "Solo puedes omitirlo para un cliente ordinario de mostrador.");
+    if (isWalkIn && (form.elements.idNumber.value.trim() || form.elements.email.value.trim() || form.elements.phone.value.trim())) return toast("Para cliente de mostrador no guardes datos personales", "Si necesitas guardar identificación o contacto, escribe primero su nombre.");
+    if (isWalkIn) name = "Cliente de mostrador";
+    var existingId = form.elements.contactId ? form.elements.contactId.value : "";
+    var existing = existingId ? state.contacts.find(function (item) { return item.id === existingId; }) : null;
+    if (existingId && !existing) return toast("No encontramos ese contacto", "Actualiza la lista e inténtalo de nuevo.");
+    var duplicateWalkIn = isWalkIn && state.contacts.find(function (item) { return item.id !== existingId && item.name === "Cliente de mostrador" && item.role === "Cliente" && item.ordinaryCustomer === true; });
+    if (duplicateWalkIn) {
+      closeModal();
+      return toast("Ya tienes un cliente de mostrador", "Usa ese contacto al registrar tus ventas para evitar duplicados.");
+    }
+    var contactData = {
+      id: existing ? existing.id : "c" + Date.now(), name: name,
+      role: selectedRole === "Cliente y proveedor" ? "Cliente · Proveedor" : selectedRole,
+      ordinaryCustomer: ordinaryCustomer,
       idNumber: form.elements.idNumber.value.trim(), email: form.elements.email.value.trim(), phone: form.elements.phone.value.trim()
-    });
-    addActivity("Nuevo contacto", name, "♙");
+    };
+    if (existing) {
+      var index = state.contacts.findIndex(function (item) { return item.id === existing.id; });
+      state.contacts[index] = Object.assign({}, existing, contactData);
+    } else state.contacts.unshift(contactData);
+    addActivity(existing ? "Contacto actualizado" : "Nuevo contacto", name, "♙");
     saveState();
     closeModal();
     render();
-    toast("Contacto guardado", name + " ya está en tu lista.");
+    toast(existing ? "Contacto actualizado" : "Contacto guardado", name + " ya está en tu lista.");
   }
 
   function submitSetup(form) {
@@ -1694,24 +2428,42 @@ window.Pyme360App = (function () {
   function submitProduct(form) {
     var name = form.elements.name.value.trim();
     var type = form.elements.type.value;
-    var material = state.inventory.find(function (item) { return item.id === form.elements.material.value; });
-    var amount = Number(form.elements.materialAmount.value) || 0;
     if (!name) return toast("Escribe el nombre del producto");
-    if (type === "Producto terminado" && material && amount <= 0) return toast("Indica cuánto material usa", "Escribe la cantidad necesaria para fabricar una unidad.");
-    var product = {
-      id: "p" + Date.now(), sku: "REF-" + Date.now().toString().slice(-6), name: name,
-      type: type, unit: form.elements.unit.value, stock: Number(form.elements.stock.value) || 0,
+    var productId = form.elements.productId ? form.elements.productId.value : "";
+    var existing = productId ? state.inventory.find(function (item) { return item.id === productId; }) : null;
+    if (productId && !existing) return toast("No encontramos ese producto", "Actualiza la lista e inténtalo de nuevo.");
+    var recipeInputs = [];
+    if (type === "Producto terminado") {
+      var recipeRows = Array.prototype.slice.call(form.querySelectorAll(".recipe-line"));
+      for (var i = 0; i < recipeRows.length; i += 1) {
+        var skuInput = recipeRows[i].querySelector("select");
+        var amountInput = recipeRows[i].querySelector("input");
+        var materialId = skuInput.value;
+        var amount = Number(amountInput.value) || 0;
+        if (!materialId && !amount) continue;
+        if (!materialId || amount <= 0) return toast("Completa el material y su cantidad", "Cada renglón de la receta necesita ambos datos. También puedes quitarlo.");
+        var material = state.inventory.find(function (item) { return item.id === materialId && (item.type === "Materia prima" || item.type === "Insumo"); });
+        if (!material) return toast("Elige una materia prima o un insumo", "Los productos terminados no se pueden usar como material de la receta.");
+        var existingLine = recipeInputs.find(function (line) { return line.sku === material.sku; });
+        if (existingLine) existingLine.amount += amount;
+        else recipeInputs.push({ sku: material.sku, amount: amount });
+      }
+    }
+    var product = Object.assign({}, existing || {}, {
+      id: existing ? existing.id : "p" + Date.now(), sku: existing ? existing.sku : "REF-" + Date.now().toString().slice(-6), name: name,
+      type: existing ? existing.type : type, unit: existing ? existing.unit : form.elements.unit.value,
+      stock: existing ? existing.stock : Number(form.elements.stock.value) || 0,
       min: Number(form.elements.min.value) || 0, cost: Number(form.elements.cost.value) || 0,
       price: Number(form.elements.price.value) || 0, taxType: form.elements.taxType.value,
-      taxRate: Number(form.elements.taxRate.value) || 0,
-      inputs: type === "Producto terminado" && material && amount > 0 ? [{ sku: material.sku, amount: amount }] : []
-    };
-    state.inventory.unshift(product);
-    addActivity("Producto agregado", product.name + " · " + product.type, "▦");
+      taxRate: Number(form.elements.taxRate.value) || 0, inputs: recipeInputs
+    });
+    if (existing) state.inventory[state.inventory.findIndex(function (item) { return item.id === existing.id; })] = product;
+    else state.inventory.unshift(product);
+    addActivity(existing ? "Producto actualizado" : "Producto agregado", product.name + " · " + product.type, "▦");
     saveState();
     closeModal();
     render();
-    toast("Producto guardado", product.name + " ya está en tu inventario.");
+    toast(existing ? "Producto actualizado" : "Producto guardado", product.name + " ya está en tu inventario.");
   }
 
   function submitAdjustment(form) {
@@ -1729,15 +2481,21 @@ window.Pyme360App = (function () {
 
   function submitPayment(form) {
     var sale = state.sales.find(function (item) { return item.id === form.elements.sale.value; });
-    if (!sale) return;
-    sale.status = "Pagada";
-    sale.paidDate = form.elements.date.value;
+    var amount = Number(form.elements.amount.value);
+    var balance = sale ? saleOutstanding(sale) : 0;
+    if (!sale) return toast("Elige una factura", "Selecciona la venta a la que corresponde el pago.");
+    if (!Number.isFinite(amount) || amount <= 0 || amount > balance) return toast("Revisa el valor recibido", "El pago debe ser mayor que cero y no puede superar el saldo de " + money(balance) + ".");
+    if (!Array.isArray(sale.payments)) sale.payments = [];
+    sale.payments.push({ id: "pay" + Date.now(), date: form.elements.date.value || today(), amount: amount, method: form.elements.method.value });
+    sale.paidDate = form.elements.date.value || today();
     sale.method = form.elements.method.value;
-    addActivity("Pago registrado", sale.number + " · " + sale.customer, "$");
+    refreshSaleStatus(sale);
+    var remaining = saleOutstanding(sale);
+    addActivity(remaining > 0 ? "Abono registrado" : "Factura pagada", sale.number + " · " + money(amount) + (remaining > 0 ? " recibido; saldo " + money(remaining) : " · " + sale.customer), "$");
     saveState();
     closeModal();
     render();
-    toast("Pago registrado", "La factura " + sale.number + " quedó marcada como pagada.");
+    toast(remaining > 0 ? "Abono guardado" : "Factura pagada", remaining > 0 ? "Queda un saldo de " + money(remaining) + "." : "La factura " + sale.number + " quedó al día.");
   }
 
   /* Exportación y detalles */
@@ -1766,6 +2524,11 @@ window.Pyme360App = (function () {
   }
 
   function toast(title, detail) {
+    if (persistencePending) { deferredToasts.push({ title: title, detail: detail }); return; }
+    showToast(title, detail);
+  }
+
+  function showToast(title, detail) {
     var region = document.getElementById("toast-region");
     var element = document.createElement("div");
     element.className = "toast";
@@ -1782,27 +2545,185 @@ window.Pyme360App = (function () {
       item = state.sales.find(function (entry) { return entry.id === id; });
       if (!item) return;
       title = "Venta " + item.number;
-      body = '<p><strong>Cliente:</strong> ' + esc(item.customer) + '</p><p><strong>Total:</strong> ' + money(item.total) + '</p><p><strong>Estado:</strong> ' + esc(item.status) + '</p><p><strong>Pago:</strong> ' + esc(item.payment) + '</p><p class="form-note">Registro local de demostración. No se ha transmitido a la DIAN.</p>';
+      var saleLines = (item.lines || []).map(function (line) {
+        var product = state.inventory.find(function (entry) { return entry.sku === line.sku; });
+        return '<li>' + esc(product ? product.name : line.sku) + ' · ' + num(line.quantity, 2) + ' unidades' + (line.unitPrice != null ? ' · ' + money(line.unitPrice) + ' c/u · IVA ' + num(line.taxRate || 0, 1) + '%' : '') + '</li>';
+      }).join("");
+      var paymentHistory = (item.payments || []).map(function (payment) { return '<li>' + dateLabel(payment.date) + ' · ' + money(payment.amount) + ' · ' + esc(payment.method || "Otro") + '</li>'; }).join("");
+      body = '<p><strong>Cliente:</strong> ' + esc(item.customer) + '</p><p><strong>Fecha:</strong> ' + dateLabel(item.date) + '</p><p><strong>Productos:</strong></p><ul>' + (saleLines || '<li>Sin detalle de productos</li>') + '</ul><p><strong>Total:</strong> ' + money(item.total) + '</p><p><strong>Recibido:</strong> ' + money(salePaidAmount(item)) + '</p><p><strong>Saldo:</strong> ' + money(saleOutstanding(item)) + '</p><p><strong>Estado de pago:</strong> ' + statusBadge(item.status) + '</p><p><strong>Seguimiento de factura:</strong> ' + statusBadge(item.invoiceFollowUpStatus || "Por revisar", (item.invoiceFollowUpStatus || "Por revisar") === "Por revisar" ? "pending" : "neutral") + '</p>' + (item.externalInvoiceNumber ? '<p><strong>Documento externo:</strong> ' + esc(item.externalInvoiceNumber) + (item.externalInvoiceDate ? ' · ' + dateLabel(item.externalInvoiceDate) : '') + '</p>' : '') + '<p><strong>Condición de pago:</strong> ' + esc(item.payment || "Contado") + '</p>' + (paymentHistory ? '<p><strong>Pagos registrados:</strong></p><ul>' + paymentHistory + '</ul>' : '') + '<p class="form-note">Este seguimiento es manual. Pyme360 no ha transmitido documentos a la DIAN.</p>';
     } else if (action === "purchase-detail") {
       item = state.purchases.find(function (entry) { return entry.id === id; });
       if (!item) return;
       title = "Compra " + item.number;
-      body = '<p><strong>Proveedor:</strong> ' + esc(item.supplier) + '</p><p><strong>Detalle:</strong> ' + esc(item.detail) + '</p><p><strong>Total:</strong> ' + money(item.total) + '</p><p><strong>Estado:</strong> ' + esc(item.status) + '</p>';
+      var purchaseDetails = purchaseLines(item).map(function (line) { var product = state.inventory.find(function (entry) { return entry.sku === line.sku; }); return '<li>' + esc(product ? product.name : line.sku) + ' · ' + num(line.quantity, 2) + ' · ' + money(line.total) + '</li>'; }).join("");
+      body = '<p><strong>Proveedor:</strong> ' + esc(item.supplier) + '</p><p><strong>Productos:</strong></p><ul>' + (purchaseDetails || '<li>' + esc(item.detail || "Sin detalle") + '</li>') + '</ul><p><strong>Fecha:</strong> ' + dateLabel(item.date) + '</p><p><strong>Total:</strong> ' + money(item.total) + '</p><p><strong>Estado:</strong> ' + esc(item.status) + '</p>' + (item.inventoryApplied === false ? '<p class="form-note">Registro importado sin movimiento de inventario.</p>' : '');
     } else if (action === "production-detail") {
       item = state.production.find(function (entry) { return entry.id === id; });
       if (!item) return;
       title = "Orden " + item.number;
-      body = '<p><strong>Producto:</strong> ' + esc(item.product) + '</p><p><strong>Cantidad planeada:</strong> ' + num(item.quantity) + ' unidades</p><p><strong>Desperdicio informado:</strong> ' + num(item.wasteKg, 1) + ' kg</p><p><strong>Estado:</strong> ' + esc(item.status) + '</p>' + (item.status === "En proceso" ? '<div class="modal-footer"><button class="button button-primary" data-action="production-complete" data-id="' + esc(item.id) + '">Marcar como terminada</button></div>' : "");
+      body = '<p><strong>Producto:</strong> ' + esc(item.product) + '</p><p><strong>Cantidad planeada:</strong> ' + num(item.quantity) + ' unidades</p><p><strong>Desperdicio informado:</strong> ' + num(item.wasteKg, 1) + ' kg</p><p><strong>Estado:</strong> ' + esc(item.status) + '</p>' + (item.inventoryApplied === false ? '<p class="form-note">Esta orden se importó y no modificó las existencias al cargarse.</p>' : '') + (item.status === "En proceso" && item.inventoryApplied !== false ? '<div class="modal-footer"><button class="button button-primary" data-action="production-complete" data-id="' + esc(item.id) + '">Marcar como terminada</button></div>' : (item.status === "Terminada" ? '<p class="form-note">La orden está cerrada. Sus unidades y residuos ya se reflejan en inventario e impacto ambiental.</p>' : ''));
     } else if (action === "contact-detail") {
       item = state.contacts.find(function (entry) { return entry.id === id; });
       if (!item) return;
-      title = item.name;
-      body = '<p><strong>Tipo:</strong> ' + esc(item.role) + '</p><p><strong>Identificación:</strong> ' + esc(item.idNumber || "Sin registrar") + '</p><p><strong>Correo:</strong> ' + esc(item.email || "Sin registrar") + '</p><p><strong>Teléfono:</strong> ' + esc(item.phone || "Sin registrar") + '</p>';
+      title = item.name || (item.ordinaryCustomer ? "Cliente de mostrador" : "Contacto");
+      body = '<p><strong>Tipo:</strong> ' + esc(item.role) + '</p>' + (item.role.indexOf("Cliente") >= 0 ? '<p><strong>Clasificación comercial:</strong> ' + (item.ordinaryCustomer ? "Cliente ordinario" : "Sin marcar como ordinario") + '</p>' : '') + '<p><strong>Identificación:</strong> ' + esc(item.idNumber || "Sin registrar") + '</p><p><strong>Correo:</strong> ' + esc(item.email || "Sin registrar") + '</p><p><strong>Teléfono:</strong> ' + esc(item.phone || "Sin registrar") + '</p>';
     }
-    openModal(title, "Información guardada en esta demostración.", '<div class="modal-form">' + body + '<div class="modal-footer"><button class="button button-primary" data-action="close-modal">Listo</button></div></div>');
+    var footer = action === "contact-detail" ? '<div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Cerrar</button><button class="button button-secondary" data-action="contact-edit" data-id="' + esc(item.id) + '">Editar</button><button class="button button-danger" data-action="contact-delete" data-id="' + esc(item.id) + '">Eliminar</button></div>' : action === "sale-detail" ? '<div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Cerrar</button><button class="button button-secondary" data-action="sale-edit" data-id="' + esc(item.id) + '">Editar</button><button class="button button-danger" data-action="sale-delete" data-id="' + esc(item.id) + '">Eliminar</button></div>' : action === "purchase-detail" ? '<div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Cerrar</button><button class="button button-secondary" data-action="purchase-edit" data-id="' + esc(item.id) + '">Editar</button><button class="button button-danger" data-action="purchase-delete" data-id="' + esc(item.id) + '">Eliminar</button></div>' : action === "production-detail" && item.status === "En proceso" ? '<div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Cerrar</button>' + (item.inventoryApplied === false ? '<button class="button button-danger" data-action="production-delete" data-id="' + esc(item.id) + '">Quitar registro</button>' : '<button class="button button-secondary" data-action="production-edit" data-id="' + esc(item.id) + '">Editar</button><button class="button button-danger" data-action="production-delete" data-id="' + esc(item.id) + '">Cancelar orden</button>') + '</div>' : '<div class="modal-footer"><button class="button button-primary" data-action="close-modal">Listo</button></div>';
+    openModal(title, "Información de tu empresa en este computador.", '<div class="modal-form">' + body + footer + '</div>');
+  }
+
+  function confirmDeleteSale(id) {
+    var sale = state.sales.find(function (item) { return item.id === id; });
+    if (!sale) return toast("No encontramos esa venta");
+    var inventoryEffect = sale.inventoryApplied === false ? "Esta venta se importó sin movimiento de inventario, por eso las existencias no cambiarán." : "Las unidades vendidas volverán al inventario.";
+    openModal("Eliminar venta " + sale.number, "Confirma antes de quitar este registro.", '<div class="modal-form"><p>¿Quieres eliminar la venta de <strong>' + esc(sale.customer) + '</strong> por <strong>' + money(sale.total) + '</strong>?</p><p class="form-note">' + inventoryEffect + ' Los totales financieros cambiarán y se quitarán los datos de pago asociados. Esta demostración no transmite documentos a la DIAN.</p><div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Cancelar</button><button class="button button-danger" data-action="sale-delete-confirm" data-id="' + esc(sale.id) + '">Sí, eliminar</button></div></div>');
+  }
+
+  function deleteSale(id) {
+    var sale = state.sales.find(function (item) { return item.id === id; });
+    if (!sale) return toast("No encontramos esa venta");
+    if (sale.inventoryApplied !== false) (sale.lines || []).forEach(function (line) {
+      var product = state.inventory.find(function (item) { return item.sku === line.sku; });
+      if (product) product.stock += Number(line.quantity) || 0;
+    });
+    state.sales = state.sales.filter(function (item) { return item.id !== id; });
+    addActivity("Venta eliminada", sale.number + " · " + sale.customer, "↗");
+    saveState();
+    closeModal();
+    render();
+    toast("Venta eliminada", sale.inventoryApplied === false ? "Se actualizaron las finanzas; las existencias no cambiaron." : "Las unidades asociadas volvieron al inventario.");
+  }
+
+  function purchaseCanReverse(purchase) {
+    if (purchase.inventoryApplied === false || purchase.status === "Por recibir") return true;
+    var quantities = {};
+    purchaseLines(purchase).forEach(function (line) { quantities[line.sku] = (quantities[line.sku] || 0) + (Number(line.quantity) || 0); });
+    return Object.keys(quantities).every(function (sku) {
+      var product = state.inventory.find(function (item) { return item.sku === sku; });
+      return !!product && Number(product.stock) >= quantities[sku];
+    });
+  }
+
+  function confirmDeletePurchase(id) {
+    var purchase = state.purchases.find(function (item) { return item.id === id; });
+    if (!purchase) return toast("No encontramos esa compra");
+    if (!purchaseCanReverse(purchase)) return toast("No se puede eliminar esta compra", "Parte de lo recibido ya se usó o el producto ya no existe. Revisa los movimientos antes de quitarla.");
+    var effect = purchase.inventoryApplied === false || purchase.status === "Por recibir" ? "No hay existencias asociadas que deban revertirse." : "Se restarán del inventario las unidades registradas en esta recepción.";
+    openModal("Eliminar compra " + purchase.number, "Confirma antes de quitar este registro.", '<div class="modal-form"><p>¿Quieres eliminar la compra de <strong>' + esc(purchase.supplier) + '</strong> por <strong>' + money(purchase.total) + '</strong>?</p><p class="form-note">' + effect + ' El registro dejará de aparecer en compras y en los saldos asociados.</p><div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Cancelar</button><button class="button button-danger" data-action="purchase-delete-confirm" data-id="' + esc(purchase.id) + '">Sí, eliminar</button></div></div>');
+  }
+
+  function deletePurchase(id) {
+    var purchase = state.purchases.find(function (item) { return item.id === id; });
+    if (!purchase) return toast("No encontramos esa compra");
+    if (!purchaseCanReverse(purchase)) return toast("No se puede eliminar", "Revisa primero el inventario relacionado.");
+    if (purchase.inventoryApplied !== false && purchase.status !== "Por recibir") {
+      purchaseLines(purchase).forEach(function (line) {
+        var product = state.inventory.find(function (item) { return item.sku === line.sku; });
+        if (product) product.stock -= Number(line.quantity) || 0;
+      });
+    }
+    state.purchases = state.purchases.filter(function (item) { return item.id !== id; });
+    addActivity("Compra eliminada", purchase.number + " · " + purchase.supplier, "↙");
+    saveState(); closeModal(); render();
+    toast("Compra eliminada", "El inventario relacionado quedó actualizado.");
+  }
+
+  function productRemovalBlock(product) {
+    if (Number(product.stock) > 0) return "Aún hay existencias de este producto. Ajusta el stock a cero antes de eliminarlo.";
+    if (state.sales.some(function (sale) { return (sale.lines || []).some(function (line) { return line.sku === product.sku; }); })) return "Este producto aparece en ventas. Conserva el registro para mantener el historial.";
+    if (state.purchases.some(function (purchase) { return purchaseLines(purchase).some(function (line) { return line.sku === product.sku; }); })) return "Este producto aparece en compras. Conserva el registro para mantener el historial.";
+    if (state.production.some(function (order) { return order.productId === product.id || (order.inputConsumption || []).some(function (line) { return line.sku === product.sku; }); })) return "Este producto aparece en órdenes de producción. Conserva el registro para mantener el historial.";
+    if (state.inventory.some(function (item) { return (item.inputs || []).some(function (line) { return line.sku === product.sku; }); })) return "Este material forma parte de una receta. Actualiza primero la receta del producto terminado.";
+    return "";
+  }
+
+  function confirmDeleteProduct(id) {
+    var product = state.inventory.find(function (item) { return item.id === id; });
+    if (!product) return toast("No encontramos ese producto");
+    var blocked = productRemovalBlock(product);
+    if (blocked) return toast("No se puede eliminar", blocked);
+    openModal("Eliminar producto", "Confirma antes de quitarlo del inventario.", '<div class="modal-form"><p>¿Quieres eliminar <strong>' + esc(product.name) + '</strong> (' + esc(product.sku) + ')?</p><p class="form-note">Solo se pueden eliminar referencias sin existencias ni operaciones relacionadas.</p><div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Cancelar</button><button class="button button-danger" data-action="product-delete-confirm" data-id="' + esc(product.id) + '">Sí, eliminar</button></div></div>');
+  }
+
+  function deleteProduct(id) {
+    var product = state.inventory.find(function (item) { return item.id === id; });
+    if (!product) return toast("No encontramos ese producto");
+    var blocked = productRemovalBlock(product);
+    if (blocked) return toast("No se puede eliminar", blocked);
+    state.inventory = state.inventory.filter(function (item) { return item.id !== id; });
+    addActivity("Producto eliminado", product.name + " · " + product.sku, "▦");
+    saveState(); closeModal(); render(); toast("Producto eliminado", "La referencia se quitó del inventario.");
+  }
+
+  function confirmDeleteProduction(id) {
+    var order = state.production.find(function (item) { return item.id === id; });
+    if (!order || order.status !== "En proceso") return toast("Esta orden ya no se puede cancelar", "Las órdenes terminadas conservan su historial.");
+    if (order.inventoryApplied !== false && (order.inputConsumption || []).some(function (line) { return !state.inventory.some(function (item) { return item.sku === line.sku; }); })) return toast("No se puede cancelar esta orden", "No se encontraron todos los materiales que se reservaron.");
+    var effect = order.inventoryApplied === false ? "Como se importó sin movimientos, el inventario no cambiará." : "Los materiales reservados volverán a estar disponibles.";
+    openModal("Cancelar orden " + order.number, "Solo puedes cancelar órdenes que siguen en proceso.", '<div class="modal-form"><p>¿Quieres cancelar la fabricación de <strong>' + esc(order.product) + '</strong> (' + num(order.quantity) + ' unidades)?</p><p class="form-note">' + effect + ' Las órdenes terminadas no se pueden borrar porque ya afectan inventario e impacto ambiental.</p><div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Seguir con la orden</button><button class="button button-danger" data-action="production-delete-confirm" data-id="' + esc(order.id) + '">Sí, cancelar</button></div></div>');
+  }
+
+  function deleteProduction(id) {
+    var order = state.production.find(function (item) { return item.id === id; });
+    if (!order || order.status !== "En proceso") return toast("Esta orden ya no se puede cancelar");
+    if (order.inventoryApplied !== false) (order.inputConsumption || []).forEach(function (line) {
+      var material = state.inventory.find(function (item) { return item.sku === line.sku; });
+      if (material) material.stock += Number(line.quantity) || 0;
+    });
+    state.production = state.production.filter(function (item) { return item.id !== id; });
+    addActivity("Orden de producción cancelada", order.number + " · " + order.product, "⚙");
+    saveState(); closeModal(); render();
+    toast("Orden cancelada", order.inventoryApplied === false ? "Se quitó el registro importado; las existencias no cambiaron." : "Los materiales reservados regresaron al inventario.");
+  }
+
+  function confirmDeleteContact(id) {
+    var contact = state.contacts.find(function (item) { return item.id === id; });
+    if (!contact) return toast("No encontramos ese contacto");
+    var name = contact.name || (contact.ordinaryCustomer ? "Cliente de mostrador" : "este contacto");
+    openModal("Eliminar contacto", "Confirma antes de quitarlo de tu lista.", '<div class="modal-form"><p>¿Quieres eliminar a <strong>' + esc(name) + '</strong>?</p><p class="form-note">El contacto dejará de aparecer en tus listas. Las ventas y compras anteriores conservarán el nombre que tenían al registrarse.</p><div class="modal-footer"><button class="button button-secondary" data-action="close-modal">Cancelar</button><button class="button button-danger" data-action="contact-delete-confirm" data-id="' + esc(contact.id) + '">Sí, eliminar</button></div></div>');
+  }
+
+  function deleteContact(id) {
+    var contact = state.contacts.find(function (item) { return item.id === id; });
+    if (!contact) return toast("No encontramos ese contacto");
+    var name = contact.name || (contact.ordinaryCustomer ? "Cliente de mostrador" : "Contacto");
+    state.contacts = state.contacts.filter(function (item) { return item.id !== id; });
+    addActivity("Contacto eliminado", name, "♙");
+    saveState();
+    closeModal();
+    render();
+    toast("Contacto eliminado", "Las operaciones anteriores conservaron su información.");
   }
 
   /* Eventos globales */
+  function readOnlyClickAllowed(target) {
+    if (!target) return false;
+    if (target.closest("[data-page]") || target.id === "dismiss-banner") return true;
+    var actionButton = target.closest("[data-action]");
+    if (!actionButton) return false;
+    return [
+      "state-reload", "theme-toggle", "sidebar-toggle", "help", "notifications", "profile", "close-modal",
+      "excel-download-master", "excel-download-template", "backup-download", "environment-export", "inventory-export", "finance-export",
+      "sale-detail", "purchase-detail", "production-detail", "contact-detail"
+    ].indexOf(actionButton.getAttribute("data-action")) >= 0;
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
+    var reloadAction = target && target.closest('[data-action="state-reload"]');
+    if (persistencePending || (persistenceBlocked && !reloadAction) || (!persistenceReady && !(readOnlyMode && readOnlyClickAllowed(target)))) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+
+  document.addEventListener("submit", function (event) {
+    if (persistencePending || !persistenceReady || persistenceBlocked) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+
   document.addEventListener("click", function (event) {
     var pageButton = event.target.closest("[data-page]");
     if (pageButton) {
@@ -1814,9 +2735,20 @@ window.Pyme360App = (function () {
     if (!button) return;
     var action = button.getAttribute("data-action");
     if (action === "new-sale") openSaleModal();
+    else if (action === "sale-edit") openSaleModal(button.getAttribute("data-id"));
+    else if (action === "sale-delete") confirmDeleteSale(button.getAttribute("data-id"));
+    else if (action === "sale-delete-confirm") deleteSale(button.getAttribute("data-id"));
+    else if (action === "sale-add-line") addSaleLine();
+    else if (action === "sale-remove-line") removeSaleLine(button);
     else if (action === "new-product") openProductModal();
+    else if (action === "product-edit") openProductModal(button.getAttribute("data-id"));
+    else if (action === "product-delete") confirmDeleteProduct(button.getAttribute("data-id"));
+    else if (action === "product-delete-confirm") deleteProduct(button.getAttribute("data-id"));
     else if (action === "new-production") openProductionModal();
-    else if (action === "new-environment") openEnvironmentModal();
+    else if (action === "production-edit") openProductionModal(button.getAttribute("data-id"));
+    else if (action === "production-delete") confirmDeleteProduction(button.getAttribute("data-id"));
+    else if (action === "production-delete-confirm") deleteProduction(button.getAttribute("data-id"));
+    else if (action === "new-environment" || action === "environment-edit") openEnvironmentModal();
     else if (action === "environment-set-target") openEnvironmentTargetsModal();
     else if (action === "environment-retry-reference") loadPublicBenchmark(true);
     else if (action === "environment-pick-receipt") {
@@ -1826,7 +2758,17 @@ window.Pyme360App = (function () {
     else if (action === "environment-example") openEnvironmentExample();
     else if (action === "environment-manual") openManualEnvironmentModal();
     else if (action === "new-purchase") openPurchaseModal();
+    else if (action === "purchase-edit") openPurchaseModal(button.getAttribute("data-id"));
+    else if (action === "purchase-delete") confirmDeletePurchase(button.getAttribute("data-id"));
+    else if (action === "purchase-delete-confirm") deletePurchase(button.getAttribute("data-id"));
+    else if (action === "purchase-add-line") addPurchaseLine();
+    else if (action === "purchase-remove-line") removePurchaseLine(button);
     else if (action === "new-contact") openContactModal();
+    else if (action === "contact-edit") openContactModal(button.getAttribute("data-id"));
+    else if (action === "contact-delete") confirmDeleteContact(button.getAttribute("data-id"));
+    else if (action === "contact-delete-confirm") deleteContact(button.getAttribute("data-id"));
+    else if (action === "recipe-add-line") addRecipeLine();
+    else if (action === "recipe-remove-line") removeRecipeLine(button);
     else if (action === "new-adjustment") openAdjustmentModal();
     else if (action === "new-payment") openPaymentModal();
     else if (action === "setup") openSetupModal();
@@ -1850,9 +2792,14 @@ window.Pyme360App = (function () {
     }
     else if (action === "excel-cancel-import") { importSession = null; render(); }
     else if (action === "excel-confirm-import") commitExcelImport();
+    else if (action === "backup-download") downloadBackup();
+    else if (action === "backup-select-file") { var backupInput = document.getElementById("backup-restore-file"); if (backupInput) backupInput.click(); }
+    else if (action === "backup-cancel-restore") { backupSession = null; closeModal(); }
+    else if (action === "backup-confirm-restore") confirmBackupRestore();
+    else if (action === "state-reload") window.location.reload();
     else if (action === "inventory-export") exportCsv("pyme360-inventario.csv", [["SKU", "Producto", "Tipo", "Existencia", "Unidad", "Minimo", "Costo unitario"]].concat(state.inventory.map(function (item) { return [item.sku, item.name, item.type, item.stock, item.unit, item.min, item.cost]; })));
     else if (action === "finance-export") exportCsv("pyme360-movimientos.csv", [["Documento", "Fecha", "Contacto", "Total COP", "Estado"]].concat(state.sales.map(function (sale) { return [sale.number, sale.date, sale.customer, sale.total, sale.status]; })));
-    else if (action === "help") openModal("Ayuda Pyme360", "Una guía breve para empezar.", '<div class="modal-form"><p><strong>1. Registra tus contactos.</strong> Así tendrás a mano clientes y proveedores.</p><p><strong>2. Ajusta tus existencias.</strong> Carga productos, materias primas e insumos.</p><p><strong>3. Usa los atajos.</strong> Registra ventas, producción y datos ambientales desde el menú.</p><p class="form-note">Los datos de tu empresa se guardan en este navegador. Solo al abrir Pyme360 con el acceso local se consulta la serie pública ODS 7.3.1 de la ONU; tus datos no se envían.</p><div class="modal-footer"><button class="button button-primary" data-action="close-modal">Entendido</button></div></div>');
+    else if (action === "help") openModal("Ayuda Pyme360", "Una guía breve para empezar.", '<div class="modal-form"><p><strong>1. Registra tus contactos.</strong> Así tendrás a mano clientes y proveedores.</p><p><strong>2. Ajusta tus existencias.</strong> Carga productos, materias primas e insumos.</p><p><strong>3. Usa los atajos.</strong> Registra ventas, producción y datos ambientales desde el menú.</p><p class="form-note">' + (readOnlyMode ? "Esta pestaña está en modo de solo lectura. Descarga un respaldo en Datos y Excel y luego ábrelo desde el lanzador para restaurarlo en SQLite." : "Tus datos de negocio quedan en la base SQLite local de este computador. La consulta pública ODS 7.3.1 de la ONU no recibe información de tu empresa.") + '</p><div class="modal-footer"><button class="button button-primary" data-action="close-modal">Entendido</button></div></div>');
     else if (action === "profile") toast("Perfil de administrador", "La gestión de usuarios estará disponible en la versión conectada.");
     else if (action === "notifications") toast("Sin notificaciones nuevas", "Te avisaremos cuando haya algo que revisar.");
   });
@@ -1889,7 +2836,21 @@ window.Pyme360App = (function () {
   });
 
   document.addEventListener("change", function (event) {
-    if (event.target.id === "environment-receipt-file") {
+    if (event.target.id === "contact-kind") {
+      var classificationField = document.getElementById("contact-ordinary-field");
+      var ordinaryCheckbox = document.getElementById("contact-ordinary");
+      if (classificationField && ordinaryCheckbox) {
+        var hasCustomerRole = event.target.value.indexOf("Cliente") >= 0;
+        var wasVisible = classificationField.getAttribute("data-customer-visible") === "true";
+        classificationField.classList.toggle("hidden", !hasCustomerRole);
+        if (!hasCustomerRole) ordinaryCheckbox.checked = false;
+        else if (!wasVisible) ordinaryCheckbox.checked = true;
+        classificationField.setAttribute("data-customer-visible", String(hasCustomerRole));
+        syncContactNameRequirement(document.getElementById("contact-form"));
+      }
+    } else if (event.target.id === "contact-ordinary") {
+      syncContactNameRequirement(document.getElementById("contact-form"));
+    } else if (event.target.id === "environment-receipt-file") {
       var receiptFile = event.target.files && event.target.files[0];
       if (receiptFile) processEnvironmentReceipt(receiptFile);
       event.target.value = "";
@@ -1911,6 +2872,12 @@ window.Pyme360App = (function () {
       var selectedFile = event.target.files && event.target.files[0];
       if (selectedFile) startExcelImport(selectedFile);
       event.target.value = "";
+    } else if (event.target.id === "backup-restore-file") {
+      var backupFile = event.target.files && event.target.files[0];
+      if (backupFile) startBackupRestore(backupFile);
+      event.target.value = "";
+    } else if (event.target.id === "payment-sale") {
+      updatePaymentBalance();
     } else if (event.target.matches("[data-excel-entity]")) {
       var entitySheet = importSession && importSession.sheets[Number(event.target.getAttribute("data-excel-sheet"))];
       if (entitySheet) {
@@ -1971,8 +2938,11 @@ window.Pyme360App = (function () {
     init: function () {
       setTheme(currentTheme);
       setSidebarCollapsed(sidebarCollapsed);
+      setPersistenceStatus("Conectando…", "saving");
       render();
-      if (window.location.protocol !== "file:" && currentPage === "environment") loadPublicBenchmark(false);
+      initializeLocalState().then(function () {
+        if (persistenceReady && currentPage === "environment") loadPublicBenchmark(false);
+      });
     }
   };
 })();

@@ -10,3 +10,10 @@ node_modules/
 Thumbs.db
 desktop.ini
 ~$*
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.sqlite3-*
+*.db
+backups/
+pyme360-data/
